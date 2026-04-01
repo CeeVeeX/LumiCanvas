@@ -41,7 +41,14 @@
         Square44x44Logo="Assets\Square44x44Logo.png">
         <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
         <uap:SplashScreen Image="Assets\SplashScreen.png" />
-      </uap:VisualElements>
+            </uap:VisualElements>
+      <Extensions>
+        <uap:Extension Category="windows.protocol">
+          <uap:Protocol Name="lumicanvas">
+            <uap:DisplayName>LumiCanvas</uap:DisplayName>
+          </uap:Protocol>
+        </uap:Extension>
+      </Extensions>
     </Application>
   </Applications>
 
@@ -49,3 +56,4 @@
     <rescap:Capability Name="runFullTrust" />
   </Capabilities>
 </Package>
+

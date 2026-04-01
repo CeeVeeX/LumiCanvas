@@ -2,6 +2,7 @@ using System;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using Microsoft.UI;
 using Microsoft.UI.Dispatching;
@@ -10,6 +11,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.Win32;
+using Windows.ApplicationModel.DataTransfer;
 using Windows.Graphics;
 using Windows.System;
 using WinRT.Interop;
@@ -103,6 +105,32 @@ public sealed partial class MainWindow : Window
     public void HideToBackground()
     {
         HideSidebar();
+    }
+
+    public void ShowSidebarFromProtocol()
+    {
+        ClearSidebarStatus();
+        ShowSidebar();
+    }
+
+    public void ShowSidebarFromProtocol(string message, bool isWarning = false)
+    {
+        ShowSidebar();
+        SetSidebarStatus(message, isWarning);
+    }
+
+    public bool TryOpenTask(Guid taskId)
+    {
+        var task = _session.Tasks.FirstOrDefault(candidate => candidate.Id == taskId);
+        if (task is null)
+        {
+            return false;
+        }
+
+        TaskListView.SelectedItem = task;
+        UpdateTaskSelection(task);
+        OpenTask(task);
+        return true;
     }
 
     private void ConfigureWindow()
@@ -285,6 +313,7 @@ public sealed partial class MainWindow : Window
     {
         PositionSidebarWindow();
         TaskListView.SelectedItem = _session.CurrentTask;
+        UpdateCommandState();
         ShowWindow(_hwnd, SwShow);
         Activate();
         SetForegroundWindow(_hwnd);
@@ -307,6 +336,7 @@ public sealed partial class MainWindow : Window
 
     private void AddTaskButton_Click(object sender, RoutedEventArgs e)
     {
+        ClearSidebarStatus();
         AddTaskFromInput();
     }
 
@@ -320,6 +350,18 @@ public sealed partial class MainWindow : Window
             Arguments = $"/root,\"{_session.StorageFolderPath}\"",
             UseShellExecute = true
         });
+    }
+
+    private void CopyCurrentTaskLinkButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_session.CurrentTask is null)
+        {
+            SetSidebarStatus("当前没有可复制链接的任务。", true);
+            return;
+        }
+
+        CopyTaskLinkToClipboard(_session.CurrentTask);
+        SetSidebarStatus("已复制当前任务链接。", false);
     }
 
     private void RootGrid_KeyDown(object sender, KeyRoutedEventArgs e)
@@ -375,10 +417,12 @@ public sealed partial class MainWindow : Window
     private void UpdateTaskSelection(TaskBoard? task)
     {
         _session.CurrentTask = task;
+        UpdateCommandState();
     }
 
     private void OpenTask(TaskBoard task)
     {
+        ClearSidebarStatus();
         _session.CurrentTask = task;
         _canvasWindow.ShowTask(task);
         HideSidebar();
@@ -429,6 +473,39 @@ public sealed partial class MainWindow : Window
         {
             task.State = TaskBoardState.Abandoned;
         }
+    }
+
+    private void UpdateCommandState()
+    {
+        CopyCurrentTaskLinkButton.IsEnabled = _session.CurrentTask is not null;
+    }
+
+    private static string BuildTaskProtocolLink(TaskBoard task)
+    {
+        return $"lumicanvas://open?taskId={task.Id}";
+    }
+
+    private static void CopyTaskLinkToClipboard(TaskBoard task)
+    {
+        var package = new DataPackage();
+        package.SetText(BuildTaskProtocolLink(task));
+        Clipboard.SetContent(package);
+        Clipboard.Flush();
+    }
+
+    private void SetSidebarStatus(string message, bool isWarning = false)
+    {
+        SidebarStatusTextBlock.Text = message;
+        SidebarStatusTextBlock.Foreground = isWarning
+            ? new Microsoft.UI.Xaml.Media.SolidColorBrush(ColorHelper.FromArgb(255, 255, 196, 120))
+            : new Microsoft.UI.Xaml.Media.SolidColorBrush(ColorHelper.FromArgb(255, 140, 196, 255));
+        SidebarStatusTextBlock.Visibility = Visibility.Visible;
+    }
+
+    private void ClearSidebarStatus()
+    {
+        SidebarStatusTextBlock.Text = string.Empty;
+        SidebarStatusTextBlock.Visibility = Visibility.Collapsed;
     }
 
     private void ToggleStartupRegistration()

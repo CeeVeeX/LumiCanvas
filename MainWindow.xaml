@@ -59,7 +59,13 @@
                     <StackPanel Orientation="Horizontal" Spacing="10">
                         <Button HorizontalAlignment="Left" Click="AddTaskButton_Click" Content="添加并打开任务" />
                         <Button HorizontalAlignment="Left" Click="OpenArchiveFolderButton_Click" Content="打开存档文件夹" />
+                        <Button x:Name="CopyCurrentTaskLinkButton" HorizontalAlignment="Left" Click="CopyCurrentTaskLinkButton_Click" Content="复制当前任务链接" />
                     </StackPanel>
+                    <TextBlock
+                        x:Name="SidebarStatusTextBlock"
+                        Visibility="Collapsed"
+                        Foreground="#8CC4FF"
+                        TextWrapping="WrapWholeWords" />
                 </StackPanel>
 
                 <ListView
