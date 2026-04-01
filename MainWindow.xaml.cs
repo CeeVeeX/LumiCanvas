@@ -455,8 +455,25 @@ public sealed partial class MainWindow : Window
         abandonItem.Click += AbandonTaskMenuItem_Click;
         flyout.Items.Add(abandonItem);
 
+        flyout.Items.Add(new MenuFlyoutSeparator());
+
+        var copyLinkItem = new MenuFlyoutItem { Text = "复制链接", Tag = task };
+        copyLinkItem.Click += CopyTaskLinkMenuItem_Click;
+        flyout.Items.Add(copyLinkItem);
+
         flyout.ShowAt(element);
         e.Handled = true;
+    }
+
+    private void CopyTaskLinkMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuFlyoutItem menuItem || menuItem.Tag is not TaskBoard task)
+        {
+            return;
+        }
+
+        CopyTaskLinkToClipboard(task);
+        SetSidebarStatus($"已复制任务“{task.Title}”的链接。", false);
     }
 
     private void CompleteTaskMenuItem_Click(object sender, RoutedEventArgs e)
