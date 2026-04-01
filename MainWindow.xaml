@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="LumiCanvas.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Title="LumiCanvas Sidebar">
+
+    <Window.SystemBackdrop>
+        <DesktopAcrylicBackdrop />
+    </Window.SystemBackdrop>
+
+    <Grid x:Name="RootGrid" Background="Transparent">
+        <Grid.Resources>
+            <DataTemplate x:Key="TaskTemplate">
+                <StackPanel Margin="0,4" Padding="4" RightTapped="TaskItem_RightTapped" Spacing="4">
+                    <TextBlock
+                        FontSize="15"
+                        FontWeight="SemiBold"
+                        TextWrapping="WrapWholeWords"
+                        Text="{Binding Title}" />
+                    <TextBlock
+                        Opacity="0.78"
+                        TextWrapping="WrapWholeWords"
+                        Text="{Binding DisplayStatus}" />
+                </StackPanel>
+            </DataTemplate>
+        </Grid.Resources>
+
+        <Border
+            x:Name="SidebarPanel"
+            Margin="0"
+            Padding="20"
+            HorizontalAlignment="Stretch"
+            Background="#7018212C"
+            BorderThickness="0"
+            CornerRadius="0">
+            <Grid RowDefinitions="Auto,Auto,*" RowSpacing="18">
+                <StackPanel Spacing="8">
+                    <TextBlock
+                        FontSize="24"
+                        FontWeight="SemiBold"
+                        Foreground="White"
+                        Text="桌面任务侧边栏" />
+                    <TextBlock
+                        TextWrapping="WrapWholeWords"
+                        Foreground="#A8B3C4"
+                        Text="按 Ctrl + Tab 唤醒或收起。点击任务会打开独立画布窗口，不会替换当前侧边栏窗口。" />
+                </StackPanel>
+
+                <StackPanel Grid.Row="1" Spacing="10">
+                    <TextBox
+                        x:Name="NewTaskTextBox"
+                        Header="新任务"
+                        KeyDown="NewTaskTextBox_KeyDown"
+                        PlaceholderText="例如：梳理产品原型 / 读书笔记 / 旅行计划" />
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <Button HorizontalAlignment="Left" Click="AddTaskButton_Click" Content="添加并打开任务" />
+                        <Button HorizontalAlignment="Left" Click="OpenArchiveFolderButton_Click" Content="打开存档文件夹" />
+                    </StackPanel>
+                </StackPanel>
+
+                <ListView
+                    x:Name="TaskListView"
+                    Grid.Row="2"
+                    Background="Transparent"
+                    IsItemClickEnabled="True"
+                    ItemTemplate="{StaticResource TaskTemplate}"
+                    ItemClick="TaskListView_ItemClick"
+                    ItemsSource="{Binding Tasks}"
+                    ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                    ScrollViewer.HorizontalScrollMode="Disabled"
+                    SelectionChanged="TaskListView_SelectionChanged" />
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

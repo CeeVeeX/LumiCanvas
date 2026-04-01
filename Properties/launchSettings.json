@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "LumiCanvas (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "LumiCanvas (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}
