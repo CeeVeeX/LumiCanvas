@@ -240,13 +240,61 @@ public sealed partial class CanvasWindow : Window
         ReturnToSidebar();
     }
 
-    private void RootGrid_KeyDown(object sender, KeyRoutedEventArgs e)
+    private async void RootGrid_KeyDown(object sender, KeyRoutedEventArgs e)
     {
         if (e.Key == Windows.System.VirtualKey.Escape)
         {
             ReturnToSidebar();
             e.Handled = true;
+            return;
         }
+
+        if (e.Key == Windows.System.VirtualKey.V && IsControlPressed())
+        {
+            await PasteFromClipboardAsync();
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Windows.System.VirtualKey.Back)
+        {
+            DeleteSelectedItems();
+            e.Handled = true;
+        }
+    }
+
+    private void DeleteSelectedItems()
+    {
+        if (_session.CurrentTask is null || _selectedItemIds.Count == 0)
+        {
+            return;
+        }
+
+        var removingItems = _session.CurrentTask.Items
+            .Where(item => _selectedItemIds.Contains(item.Id) && !item.IsEditing)
+            .ToList();
+
+        if (removingItems.Count == 0)
+        {
+            return;
+        }
+
+        _session.BeginDeferredSave();
+        try
+        {
+            foreach (var item in removingItems)
+            {
+                _session.CurrentTask.Items.Remove(item);
+                RemoveBoardItemView(item.Id);
+                _selectedItemIds.Remove(item.Id);
+            }
+        }
+        finally
+        {
+            _session.EndDeferredSave();
+        }
+
+        ClearSelectedItems();
     }
 
     private void ReturnToSidebar()
@@ -542,12 +590,7 @@ public sealed partial class CanvasWindow : Window
 
         foreach (var item in _session.CurrentTask.Items)
         {
-            var view = CreateBoardItemView(item);
-            _itemViews[item.Id] = view;
-            Canvas.SetLeft(view, item.X);
-            Canvas.SetTop(view, item.Y);
-            Canvas.SetZIndex(view, item.ZIndex);
-            BoardCanvas.Children.Add(view);
+            AddBoardItemView(item);
         }
 
         _highestZIndex = _session.CurrentTask.Items.Count == 0 ? 0 : _session.CurrentTask.Items.Max(item => item.ZIndex);

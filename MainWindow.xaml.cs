@@ -41,6 +41,8 @@ public sealed partial class MainWindow : Window
     private const long WsExDlgModalFrame = 0x00000001L;
     private const long WsExWindowEdge = 0x00000100L;
     private const long WsExClientEdge = 0x00000200L;
+    private const long WsExToolWindow = 0x00000080L;
+    private const long WsExAppWindow = 0x00040000L;
     private const uint NifMessage = 0x00000001;
     private const uint NifIcon = 0x00000002;
     private const uint NifTip = 0x00000004;
@@ -70,6 +72,8 @@ public sealed partial class MainWindow : Window
     private const uint SwpNoMove = 0x0002;
     private const uint SwpNoZOrder = 0x0004;
     private const uint SwpFrameChanged = 0x0020;
+    private const uint ShcneAssocChanged = 0x08000000;
+    private const uint ShcnfIdList = 0x0000;
     private readonly Microsoft.UI.Dispatching.DispatcherQueue _dispatcherQueue;
     private readonly WorkspaceSession _session;
     private readonly CanvasWindow _canvasWindow;
@@ -100,6 +104,7 @@ public sealed partial class MainWindow : Window
         _timeTagReminderTimer.Tick += TimeTagReminderTimer_Tick;
 
         ConfigureWindow();
+        EnsureLumiFileAssociation();
         RegisterGlobalHotKey();
         InitializeTrayIcon();
         UpdateTaskSelection(null);
@@ -108,6 +113,47 @@ public sealed partial class MainWindow : Window
 
         Activated += MainWindow_Activated;
         Closed += MainWindow_Closed;
+    }
+
+    private static void EnsureLumiFileAssociation()
+    {
+        try
+        {
+            var executablePath = Environment.ProcessPath;
+            if (string.IsNullOrWhiteSpace(executablePath))
+            {
+                return;
+            }
+
+            const string extensionKey = @"Software\Classes\.lumi";
+            const string progId = "LumiCanvas.lumi";
+            const string progIdKey = @"Software\Classes\LumiCanvas.lumi";
+
+            using (var key = Registry.CurrentUser.CreateSubKey(extensionKey))
+            {
+                key?.SetValue(string.Empty, progId);
+            }
+
+            using (var key = Registry.CurrentUser.CreateSubKey(progIdKey))
+            {
+                key?.SetValue(string.Empty, "LumiCanvas Archive");
+            }
+
+            using (var key = Registry.CurrentUser.CreateSubKey($"{progIdKey}\\DefaultIcon"))
+            {
+                key?.SetValue(string.Empty, $"\"{executablePath}\",0");
+            }
+
+            using (var key = Registry.CurrentUser.CreateSubKey($"{progIdKey}\\shell\\open\\command"))
+            {
+                key?.SetValue(string.Empty, $"\"{executablePath}\" \"%1\"");
+            }
+
+            SHChangeNotify(ShcneAssocChanged, ShcnfIdList, IntPtr.Zero, IntPtr.Zero);
+        }
+        catch
+        {
+        }
     }
 
     public ObservableCollection<TaskBoard> Tasks => _session?.Tasks ?? [];
@@ -133,6 +179,19 @@ public sealed partial class MainWindow : Window
     {
         var task = _session.Tasks.FirstOrDefault(candidate => candidate.Id == taskId);
         if (task is null)
+        {
+            return false;
+        }
+
+        TaskListView.SelectedItem = task;
+        UpdateTaskSelection(task);
+        OpenTask(task);
+        return true;
+    }
+
+    public bool TryOpenTaskArchive(string archivePath)
+    {
+        if (!_session.TryEnsureTaskFromArchivePath(archivePath, out var task) || task is null)
         {
             return false;
         }
@@ -172,6 +231,8 @@ public sealed partial class MainWindow : Window
 
         var exStyle = GetWindowLongPtr(_hwnd, GwlExStyle).ToInt64();
         exStyle &= ~(WsExDlgModalFrame | WsExWindowEdge | WsExClientEdge);
+        exStyle &= ~WsExAppWindow;
+        exStyle |= WsExToolWindow;
         SetWindowLongPtr(_hwnd, GwlExStyle, new nint(exStyle));
 
         SetWindowPos(_hwnd, IntPtr.Zero, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoZOrder | SwpFrameChanged);
@@ -252,6 +313,7 @@ public sealed partial class MainWindow : Window
         _isExitRequested = true;
         _timeTagReminderTimer.Stop();
         _session.Flush();
+        _session.ClearTaskAssetsCache();
         UnregisterHotKey(_hwnd, HotKeyId);
         RemoveTrayIcon();
         _canvasWindow.Shutdown();
@@ -518,6 +580,14 @@ public sealed partial class MainWindow : Window
         renameItem.Click += RenameTaskMenuItem_Click;
         flyout.Items.Add(renameItem);
 
+        var locateArchiveItem = new MenuFlyoutItem { Text = "定位存档", Tag = task };
+        locateArchiveItem.Click += LocateArchiveMenuItem_Click;
+        flyout.Items.Add(locateArchiveItem);
+
+        var removeFromMenuItem = new MenuFlyoutItem { Text = "从菜单移除", Tag = task };
+        removeFromMenuItem.Click += RemoveFromMenuMenuItem_Click;
+        flyout.Items.Add(removeFromMenuItem);
+
         flyout.Items.Add(new MenuFlyoutSeparator());
 
         var copyLinkItem = new MenuFlyoutItem { Text = "复制链接", Tag = task };
@@ -553,6 +623,47 @@ public sealed partial class MainWindow : Window
         {
             task.State = TaskBoardState.Abandoned;
         }
+    }
+
+    private void LocateArchiveMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuFlyoutItem { Tag: TaskBoard task })
+        {
+            return;
+        }
+
+        var archivePath = _session.GetTaskArchivePath(task.Id);
+        if (string.IsNullOrWhiteSpace(archivePath) || !File.Exists(archivePath))
+        {
+            SetSidebarStatus("未找到任务存档文件。", true);
+            return;
+        }
+
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = "explorer.exe",
+            Arguments = $"/select,\"{archivePath}\"",
+            UseShellExecute = true
+        });
+    }
+
+    private void RemoveFromMenuMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuFlyoutItem { Tag: TaskBoard task })
+        {
+            return;
+        }
+
+        var removed = _session.RemoveTaskFromMenu(task.Id);
+        if (!removed)
+        {
+            return;
+        }
+
+        TaskListView.SelectedItem = null;
+        UpdateTaskSelection(null);
+        _canvasWindow.HideWindow();
+        SetSidebarStatus($"已从菜单移除“{task.Title}”。", false);
     }
 
     private void UpdateCommandState()
@@ -625,6 +736,7 @@ public sealed partial class MainWindow : Window
         _isExitRequested = true;
         _timeTagReminderTimer.Stop();
         _session.Flush();
+        _session.ClearTaskAssetsCache();
         RemoveTrayIcon();
         _canvasWindow.Shutdown();
         Close();
@@ -633,6 +745,7 @@ public sealed partial class MainWindow : Window
 
     private void TimeTagReminderTimer_Tick(Microsoft.UI.Dispatching.DispatcherQueueTimer sender, object args)
     {
+        _session.PruneMissingMenuTasks();
         TryCheckTimeTagReminders();
     }
 
@@ -910,6 +1023,9 @@ public sealed partial class MainWindow : Window
     [DllImport("shell32.dll", EntryPoint = "Shell_NotifyIconW", CharSet = CharSet.Unicode)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool ShellNotifyIcon(uint dwMessage, ref NotifyIconData lpData);
+
+    [DllImport("shell32.dll")]
+    private static extern void SHChangeNotify(uint wEventId, uint uFlags, IntPtr dwItem1, IntPtr dwItem2);
 
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int dwAttribute, ref uint pvAttribute, int cbAttribute);

@@ -1,3 +1,4 @@
+using System;
 using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -185,5 +186,28 @@ public sealed partial class CanvasWindow
         }
 
         _itemViews[item.Id] = newView;
+    }
+
+    private FrameworkElement AddBoardItemView(BoardItemModel item)
+    {
+        var view = CreateBoardItemView(item);
+        _itemViews[item.Id] = view;
+        Canvas.SetLeft(view, item.X);
+        Canvas.SetTop(view, item.Y);
+        Canvas.SetZIndex(view, item.ZIndex);
+        BoardCanvas.Children.Add(view);
+        _highestZIndex = Math.Max(_highestZIndex, item.ZIndex);
+        return view;
+    }
+
+    private void RemoveBoardItemView(Guid itemId)
+    {
+        if (!_itemViews.TryGetValue(itemId, out var view))
+        {
+            return;
+        }
+
+        BoardCanvas.Children.Remove(view);
+        _itemViews.Remove(itemId);
     }
 }
