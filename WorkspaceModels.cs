@@ -24,7 +24,21 @@ public enum BoardItemKind
     Markdown,
     Image,
     Video,
-    File
+    File,
+    TimeTag
+}
+
+[Flags]
+public enum TimeTagRecurrence
+{
+    None = 0,
+    Monday = 1 << 0,
+    Tuesday = 1 << 1,
+    Wednesday = 1 << 2,
+    Thursday = 1 << 3,
+    Friday = 1 << 4,
+    Saturday = 1 << 5,
+    Sunday = 1 << 6
 }
 
 public sealed class WorkspaceSession : INotifyPropertyChanged
@@ -174,7 +188,12 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
                             Height = itemDocument.Height,
                             ZIndex = itemDocument.ZIndex,
                             Content = itemDocument.Content,
-                            SourcePath = itemDocument.SourcePath
+                            SourcePath = itemDocument.SourcePath,
+                            TimeTagDueAt = itemDocument.TimeTagDueAt,
+                            TimeTagReminderEnabled = itemDocument.TimeTagReminderEnabled,
+                            TimeTagRecurrence = itemDocument.TimeTagRecurrence,
+                            TimeTagLastReminderAt = itemDocument.TimeTagLastReminderAt,
+                            TimeTagMonthlyDays = itemDocument.TimeTagMonthlyDays
                         });
                     }
 
@@ -342,12 +361,13 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
     {
         try
         {
-            await Task.Delay(250, cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Delay(250);
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+
             SaveTaskNow(task);
-        }
-        catch (OperationCanceledException)
-        {
         }
         finally
         {
@@ -379,7 +399,12 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
                 Height = item.Height,
                 ZIndex = item.ZIndex,
                 Content = item.Kind == BoardItemKind.Markdown ? item.Content : null,
-                SourcePath = item.SourcePath
+                SourcePath = item.SourcePath,
+                TimeTagDueAt = item.Kind == BoardItemKind.TimeTag ? item.TimeTagDueAt : null,
+                TimeTagReminderEnabled = item.Kind == BoardItemKind.TimeTag && item.TimeTagReminderEnabled,
+                TimeTagRecurrence = item.Kind == BoardItemKind.TimeTag ? item.TimeTagRecurrence : TimeTagRecurrence.None,
+                TimeTagLastReminderAt = item.Kind == BoardItemKind.TimeTag ? item.TimeTagLastReminderAt : null,
+                TimeTagMonthlyDays = item.Kind == BoardItemKind.TimeTag ? item.TimeTagMonthlyDays : null
             }).ToList()
         };
 
@@ -425,6 +450,16 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
         public string? Content { get; set; }
 
         public string? SourcePath { get; set; }
+
+        public DateTimeOffset? TimeTagDueAt { get; set; }
+
+        public bool TimeTagReminderEnabled { get; set; }
+
+        public TimeTagRecurrence TimeTagRecurrence { get; set; }
+
+        public DateTimeOffset? TimeTagLastReminderAt { get; set; }
+
+        public string? TimeTagMonthlyDays { get; set; }
     }
 }
 
@@ -511,6 +546,11 @@ public sealed class BoardItemModel : INotifyPropertyChanged
     private bool _isEditing;
     private string? _content;
     private string? _sourcePath;
+    private DateTimeOffset? _timeTagDueAt;
+    private bool _timeTagReminderEnabled = true;
+    private TimeTagRecurrence _timeTagRecurrence;
+    private DateTimeOffset? _timeTagLastReminderAt;
+    private string? _timeTagMonthlyDays;
 
     public Guid Id { get; set; } = Guid.NewGuid();
 
@@ -566,6 +606,36 @@ public sealed class BoardItemModel : INotifyPropertyChanged
     {
         get => _sourcePath;
         set => SetProperty(ref _sourcePath, value);
+    }
+
+    public DateTimeOffset? TimeTagDueAt
+    {
+        get => _timeTagDueAt;
+        set => SetProperty(ref _timeTagDueAt, value);
+    }
+
+    public bool TimeTagReminderEnabled
+    {
+        get => _timeTagReminderEnabled;
+        set => SetProperty(ref _timeTagReminderEnabled, value);
+    }
+
+    public TimeTagRecurrence TimeTagRecurrence
+    {
+        get => _timeTagRecurrence;
+        set => SetProperty(ref _timeTagRecurrence, value);
+    }
+
+    public DateTimeOffset? TimeTagLastReminderAt
+    {
+        get => _timeTagLastReminderAt;
+        set => SetProperty(ref _timeTagLastReminderAt, value);
+    }
+
+    public string? TimeTagMonthlyDays
+    {
+        get => _timeTagMonthlyDays;
+        set => SetProperty(ref _timeTagMonthlyDays, value);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
@@ -44,7 +45,9 @@ public sealed partial class MainWindow : Window
     private const uint NifIcon = 0x00000002;
     private const uint NifTip = 0x00000004;
     private const uint NimAdd = 0x00000000;
+    private const uint NimModify = 0x00000001;
     private const uint NimDelete = 0x00000002;
+    private const uint NifInfo = 0x00000010;
     private const uint MfString = 0x00000000;
     private const uint MfSeparator = 0x00000800;
     private const uint MfChecked = 0x00000008;
@@ -70,6 +73,7 @@ public sealed partial class MainWindow : Window
     private readonly Microsoft.UI.Dispatching.DispatcherQueue _dispatcherQueue;
     private readonly WorkspaceSession _session;
     private readonly CanvasWindow _canvasWindow;
+    private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _timeTagReminderTimer;
     private readonly IntPtr _hwnd;
     private AppWindow? _appWindow;
     private NotifyIconData _notifyIconData;
@@ -90,11 +94,17 @@ public sealed partial class MainWindow : Window
         _hwnd = WindowNative.GetWindowHandle(this);
         _canvasWindow = new CanvasWindow(_session);
         _canvasWindow.SidebarRequested += CanvasWindow_SidebarRequested;
+        _timeTagReminderTimer = _dispatcherQueue.CreateTimer();
+        _timeTagReminderTimer.IsRepeating = true;
+        _timeTagReminderTimer.Interval = TimeSpan.FromSeconds(30);
+        _timeTagReminderTimer.Tick += TimeTagReminderTimer_Tick;
 
         ConfigureWindow();
         RegisterGlobalHotKey();
         InitializeTrayIcon();
         UpdateTaskSelection(null);
+        _timeTagReminderTimer.Start();
+        TryCheckTimeTagReminders();
 
         Activated += MainWindow_Activated;
         Closed += MainWindow_Closed;
@@ -239,6 +249,7 @@ public sealed partial class MainWindow : Window
     private void MainWindow_Closed(object sender, WindowEventArgs args)
     {
         _isExitRequested = true;
+        _timeTagReminderTimer.Stop();
         _session.Flush();
         UnregisterHotKey(_hwnd, HotKeyId);
         RemoveTrayIcon();
@@ -397,6 +408,45 @@ public sealed partial class MainWindow : Window
         OpenTask(task);
     }
 
+    private async void RenameTaskMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuFlyoutItem { Tag: TaskBoard task })
+        {
+            return;
+        }
+
+        var titleBox = new TextBox
+        {
+            Header = "任务名称",
+            Text = task.Title
+        };
+
+        var dialog = new ContentDialog
+        {
+            Title = "修改任务名称",
+            PrimaryButtonText = "保存",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = RootGrid.XamlRoot,
+            Content = titleBox
+        };
+
+        var result = await dialog.ShowAsync();
+        if (result != ContentDialogResult.Primary)
+        {
+            return;
+        }
+
+        var updatedTitle = titleBox.Text?.Trim();
+        if (string.IsNullOrWhiteSpace(updatedTitle) || string.Equals(updatedTitle, task.Title, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        task.Title = updatedTitle;
+        SetSidebarStatus($"已将任务重命名为“{task.Title}”。", false);
+    }
+
     private void TaskListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         UpdateTaskSelection(TaskListView.SelectedItem as TaskBoard);
@@ -454,6 +504,10 @@ public sealed partial class MainWindow : Window
         var abandonItem = new MenuFlyoutItem { Text = "放弃任务", Tag = task };
         abandonItem.Click += AbandonTaskMenuItem_Click;
         flyout.Items.Add(abandonItem);
+
+        var renameItem = new MenuFlyoutItem { Text = "重命名", Tag = task };
+        renameItem.Click += RenameTaskMenuItem_Click;
+        flyout.Items.Add(renameItem);
 
         flyout.Items.Add(new MenuFlyoutSeparator());
 
@@ -560,11 +614,212 @@ public sealed partial class MainWindow : Window
     private void ExitApplication()
     {
         _isExitRequested = true;
+        _timeTagReminderTimer.Stop();
         _session.Flush();
         RemoveTrayIcon();
         _canvasWindow.Shutdown();
         Close();
         Application.Current.Exit();
+    }
+
+    private void TimeTagReminderTimer_Tick(Microsoft.UI.Dispatching.DispatcherQueueTimer sender, object args)
+    {
+        TryCheckTimeTagReminders();
+    }
+
+    private void TryCheckTimeTagReminders()
+    {
+        try
+        {
+            CheckTimeTagReminders();
+        }
+        catch
+        {
+        }
+    }
+
+    private void CheckTimeTagReminders()
+    {
+        var now = DateTimeOffset.Now;
+        foreach (var task in _session.Tasks)
+        {
+            foreach (var item in task.Items)
+            {
+                try
+                {
+                    if (item.Kind != BoardItemKind.TimeTag || !item.TimeTagReminderEnabled || item.TimeTagDueAt is null)
+                    {
+                        continue;
+                    }
+
+                    var dueOccurrence = GetLatestDueOccurrence(item, now);
+                    if (dueOccurrence is null)
+                    {
+                        continue;
+                    }
+
+                    if (item.TimeTagLastReminderAt.HasValue && item.TimeTagLastReminderAt.Value >= dueOccurrence.Value)
+                    {
+                        continue;
+                    }
+
+                    item.TimeTagLastReminderAt = dueOccurrence;
+                    ShowTimeTagReminder(task, item, dueOccurrence.Value);
+                }
+                catch
+                {
+                }
+            }
+        }
+    }
+
+    private void ShowTimeTagReminder(TaskBoard task, BoardItemModel item, DateTimeOffset dueOccurrence)
+    {
+        if (!_trayIconRegistered)
+        {
+            return;
+        }
+
+        try
+        {
+            var title = string.IsNullOrWhiteSpace(item.Content) ? "时间标签" : item.Content;
+            var notice = _notifyIconData;
+            notice.uFlags = NifInfo;
+            notice.szInfoTitle = TruncateForNative("LumiCanvas 到期提醒", 63);
+            notice.szInfo = TruncateForNative($"{title}\n任务：{task.Title}\n到期：{dueOccurrence.ToLocalTime():yyyy-MM-dd HH:mm}", 255);
+            notice.dwInfoFlags = 0;
+            ShellNotifyIcon(NimModify, ref notice);
+        }
+        catch
+        {
+        }
+    }
+
+    private static string TruncateForNative(string text, int maxLength)
+    {
+        if (string.IsNullOrEmpty(text) || text.Length <= maxLength)
+        {
+            return text;
+        }
+
+        return text[..maxLength];
+    }
+
+    private static DateTimeOffset? GetLatestDueOccurrence(BoardItemModel item, DateTimeOffset now)
+    {
+        if (item.TimeTagDueAt is null)
+        {
+            return null;
+        }
+
+        var dueAt = item.TimeTagDueAt.Value;
+        var recurrence = item.TimeTagRecurrence;
+        var monthlyDays = ParseMonthlyDays(item.TimeTagMonthlyDays);
+        if (recurrence == TimeTagRecurrence.None && monthlyDays.Count == 0)
+        {
+            return now >= dueAt ? dueAt : null;
+        }
+
+        var start = dueAt;
+        var time = dueAt.TimeOfDay;
+        DateTimeOffset? latest = null;
+
+        static void PickLatest(ref DateTimeOffset? latestValue, DateTimeOffset candidate, DateTimeOffset startValue, DateTimeOffset nowValue)
+        {
+            if (candidate < startValue || candidate > nowValue)
+            {
+                return;
+            }
+
+            if (!latestValue.HasValue || candidate > latestValue.Value)
+            {
+                latestValue = candidate;
+            }
+        }
+
+        if (recurrence.HasFlag(TimeTagRecurrence.Monday)) PickLatest(ref latest, GetLatestWeekdayOccurrence(now, DayOfWeek.Monday, time), start, now);
+        if (recurrence.HasFlag(TimeTagRecurrence.Tuesday)) PickLatest(ref latest, GetLatestWeekdayOccurrence(now, DayOfWeek.Tuesday, time), start, now);
+        if (recurrence.HasFlag(TimeTagRecurrence.Wednesday)) PickLatest(ref latest, GetLatestWeekdayOccurrence(now, DayOfWeek.Wednesday, time), start, now);
+        if (recurrence.HasFlag(TimeTagRecurrence.Thursday)) PickLatest(ref latest, GetLatestWeekdayOccurrence(now, DayOfWeek.Thursday, time), start, now);
+        if (recurrence.HasFlag(TimeTagRecurrence.Friday)) PickLatest(ref latest, GetLatestWeekdayOccurrence(now, DayOfWeek.Friday, time), start, now);
+        if (recurrence.HasFlag(TimeTagRecurrence.Saturday)) PickLatest(ref latest, GetLatestWeekdayOccurrence(now, DayOfWeek.Saturday, time), start, now);
+        if (recurrence.HasFlag(TimeTagRecurrence.Sunday)) PickLatest(ref latest, GetLatestWeekdayOccurrence(now, DayOfWeek.Sunday, time), start, now);
+
+        foreach (var day in monthlyDays)
+        {
+            PickLatest(ref latest, GetLatestMonthlyDayOccurrence(now, day, time), start, now);
+        }
+
+        return latest;
+    }
+
+    private static DateTimeOffset GetLatestWeekdayOccurrence(DateTimeOffset now, DayOfWeek day, TimeSpan time)
+    {
+        var diff = ((int)now.DayOfWeek - (int)day + 7) % 7;
+        var baseDate = now.Date.AddDays(-diff);
+        var candidate = new DateTimeOffset(baseDate.Year, baseDate.Month, baseDate.Day, time.Hours, time.Minutes, time.Seconds, now.Offset);
+        if (candidate > now)
+        {
+            candidate = candidate.AddDays(-7);
+        }
+
+        return candidate;
+    }
+
+    private static DateTimeOffset GetLatestMonthlyDayOccurrence(DateTimeOffset now, int dayOfMonth, TimeSpan time)
+    {
+        var currentMonthDay = Math.Min(dayOfMonth, DateTime.DaysInMonth(now.Year, now.Month));
+        var currentMonthOccurrence = new DateTimeOffset(now.Year, now.Month, currentMonthDay, time.Hours, time.Minutes, time.Seconds, now.Offset);
+        if (currentMonthOccurrence <= now)
+        {
+            return currentMonthOccurrence;
+        }
+
+        var previousMonth = now.AddMonths(-1);
+        var previousMonthDay = Math.Min(dayOfMonth, DateTime.DaysInMonth(previousMonth.Year, previousMonth.Month));
+        return new DateTimeOffset(previousMonth.Year, previousMonth.Month, previousMonthDay, time.Hours, time.Minutes, time.Seconds, now.Offset);
+    }
+
+    private static List<int> ParseMonthlyDays(string? expression)
+    {
+        var days = new SortedSet<int>();
+        if (string.IsNullOrWhiteSpace(expression))
+        {
+            return days.ToList();
+        }
+
+        foreach (var token in expression.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var rangeParts = token.Split('-', 2, StringSplitOptions.TrimEntries);
+            if (rangeParts.Length == 2)
+            {
+                if (!int.TryParse(rangeParts[0], out var start) || !int.TryParse(rangeParts[1], out var end))
+                {
+                    continue;
+                }
+
+                if (start > end)
+                {
+                    (start, end) = (end, start);
+                }
+
+                start = Math.Clamp(start, 1, 31);
+                end = Math.Clamp(end, 1, 31);
+                for (var value = start; value <= end; value++)
+                {
+                    days.Add(value);
+                }
+
+                continue;
+            }
+
+            if (int.TryParse(token, out var day))
+            {
+                days.Add(Math.Clamp(day, 1, 31));
+            }
+        }
+
+        return days.ToList();
     }
 
     private void ShowTrayMenu()

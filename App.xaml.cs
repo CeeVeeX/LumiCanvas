@@ -1,6 +1,9 @@
 ﻿using System;
+using System.Globalization;
+using System.Threading;
 using Microsoft.Windows.AppLifecycle;
 using Microsoft.UI.Xaml;
+using Windows.Globalization;
 
 namespace LumiCanvas
 {
@@ -11,6 +14,13 @@ namespace LumiCanvas
 
         public App()
         {
+            ApplicationLanguages.PrimaryLanguageOverride = "zh-Hans-CN";
+            var culture = CultureInfo.GetCultureInfo("zh-CN");
+            CultureInfo.DefaultThreadCurrentCulture = culture;
+            CultureInfo.DefaultThreadCurrentUICulture = culture;
+            Thread.CurrentThread.CurrentCulture = culture;
+            Thread.CurrentThread.CurrentUICulture = culture;
+
             InitializeComponent();
             AppInstance.GetCurrent().Activated += AppInstance_Activated;
         }
