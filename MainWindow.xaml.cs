@@ -196,7 +196,8 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        var workArea = DisplayArea.GetFromWindowId(_appWindow.Id, DisplayAreaFallback.Primary).WorkArea;
+        GetCursorPos(out var cursorPosition);
+        var workArea = DisplayArea.GetFromPoint(new PointInt32(cursorPosition.X, cursorPosition.Y), DisplayAreaFallback.Primary).WorkArea;
         _appWindow.MoveAndResize(new RectInt32(
             workArea.X + Math.Max(0, workArea.Width - 492),
             workArea.Y,
@@ -401,11 +402,19 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        var task = _session.AddTask(title);
-        NewTaskTextBox.Text = string.Empty;
-        TaskListView.SelectedItem = task;
-        UpdateTaskSelection(task);
-        OpenTask(task);
+        try
+        {
+            var task = _session.AddTask(title);
+            NewTaskTextBox.Text = string.Empty;
+            TaskListView.SelectedItem = task;
+            UpdateTaskSelection(task);
+            OpenTask(task);
+        }
+        catch (Exception ex)
+        {
+            App.WriteDiagnostic("MainWindow.AddTaskFromInput", ex);
+            SetSidebarStatus("创建任务失败，请查看日志。", true);
+        }
     }
 
     private async void RenameTaskMenuItem_Click(object sender, RoutedEventArgs e)

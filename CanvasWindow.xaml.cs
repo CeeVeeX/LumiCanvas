@@ -130,6 +130,7 @@ public sealed partial class CanvasWindow : Window
         CurrentTaskTitleText.Text = task.Title;
         UpdateCommandState();
         RenderCurrentBoard();
+        PositionCanvasWindowToCursorDisplay();
         ShowWindow(_hwnd, SwRestore);
         Activate();
         SetForegroundWindow(_hwnd);
@@ -164,14 +165,25 @@ public sealed partial class CanvasWindow : Window
         RemoveSystemWindowCorner();
         RemoveSystemWindowBorder();
 
-        var workArea = DisplayArea.GetFromWindowId(windowId, DisplayAreaFallback.Primary).WorkArea;
+        PositionCanvasWindowToCursorDisplay();
+
+        HideWindow();
+    }
+
+    private void PositionCanvasWindowToCursorDisplay()
+    {
+        if (_appWindow is null)
+        {
+            return;
+        }
+
+        GetCursorPos(out var cursorPosition);
+        var workArea = DisplayArea.GetFromPoint(new PointInt32(cursorPosition.X, cursorPosition.Y), DisplayAreaFallback.Primary).WorkArea;
         _appWindow.MoveAndResize(new RectInt32(
             workArea.X,
             workArea.Y,
             workArea.Width,
             workArea.Height));
-
-        HideWindow();
     }
 
     private void RemoveSystemWindowBorder()
@@ -1058,6 +1070,9 @@ public sealed partial class CanvasWindow : Window
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out NativePoint lpPoint);
 
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
     private static extern nint SetWindowLongPtr(IntPtr hWnd, int nIndex, nint dwNewLong);

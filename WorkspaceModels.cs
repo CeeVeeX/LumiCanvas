@@ -205,8 +205,9 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
                         SaveTaskNow(board);
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
+                    App.WriteDiagnostic($"WorkspaceSession.LoadTasks: {file}", ex);
                 }
             }
         }

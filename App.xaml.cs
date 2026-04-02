@@ -1,9 +1,9 @@
 ﻿using System;
-using System.Globalization;
-using System.Threading;
+using System.IO;
+using System.Text;
+using System.Threading.Tasks;
 using Microsoft.Windows.AppLifecycle;
 using Microsoft.UI.Xaml;
-using Windows.Globalization;
 
 namespace LumiCanvas
 {
@@ -14,15 +14,52 @@ namespace LumiCanvas
 
         public App()
         {
-            ApplicationLanguages.PrimaryLanguageOverride = "zh-Hans-CN";
-            var culture = CultureInfo.GetCultureInfo("zh-CN");
-            CultureInfo.DefaultThreadCurrentCulture = culture;
-            CultureInfo.DefaultThreadCurrentUICulture = culture;
-            Thread.CurrentThread.CurrentCulture = culture;
-            Thread.CurrentThread.CurrentUICulture = culture;
-
             InitializeComponent();
             AppInstance.GetCurrent().Activated += AppInstance_Activated;
+            UnhandledException += App_UnhandledException;
+            AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
+            TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
+        }
+
+        private void App_UnhandledException(object sender, Microsoft.UI.Xaml.UnhandledExceptionEventArgs e)
+        {
+            WriteDiagnostic("App.UnhandledException", e.Exception);
+            e.Handled = true;
+        }
+
+        private void CurrentDomain_UnhandledException(object sender, System.UnhandledExceptionEventArgs e)
+        {
+            WriteDiagnostic("AppDomain.UnhandledException", e.ExceptionObject as Exception);
+        }
+
+        private void TaskScheduler_UnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
+        {
+            WriteDiagnostic("TaskScheduler.UnobservedTaskException", e.Exception);
+            e.SetObserved();
+        }
+
+        internal static void WriteDiagnostic(string source, Exception? exception)
+        {
+            try
+            {
+                var logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LumiCanvas", "Logs");
+                Directory.CreateDirectory(logDir);
+                var logPath = Path.Combine(logDir, "runtime.log");
+
+                var builder = new StringBuilder();
+                builder.AppendLine("========================================");
+                builder.AppendLine(DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss.fff zzz"));
+                builder.AppendLine(source);
+                if (exception is not null)
+                {
+                    builder.AppendLine(exception.ToString());
+                }
+
+                File.AppendAllText(logPath, builder.ToString(), Encoding.UTF8);
+            }
+            catch
+            {
+            }
         }
 
         protected override void OnLaunched(Microsoft.UI.Xaml.LaunchActivatedEventArgs args)
