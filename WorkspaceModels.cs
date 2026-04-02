@@ -290,12 +290,6 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
         var isStartupBoard = string.Equals(document.Title, StartupBoardTitle, StringComparison.Ordinal) ||
                              document.Title.Contains("LumiCanvas", StringComparison.OrdinalIgnoreCase);
 
-        if (LooksCorrupted(document.Title))
-        {
-            document.Title = isStartupBoard ? StartupBoardTitle : "Î´ÃüÃûÈÎÎñ";
-            changed = true;
-        }
-
         foreach (var item in document.Items)
         {
             if (item.Kind != BoardItemKind.Markdown)
@@ -313,12 +307,6 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
 
                 continue;
             }
-
-            if (LooksCorrupted(item.Content))
-            {
-                item.Content = DefaultMarkdownContent;
-                changed = true;
-            }
         }
 
         return changed;
@@ -331,17 +319,7 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
             return true;
         }
 
-        if (LooksCorrupted(content))
-        {
-            return true;
-        }
-
         return !string.Equals(content, StartupBoardMarkdownContent, StringComparison.Ordinal);
-    }
-
-    private static bool LooksCorrupted(string? text)
-    {
-        return !string.IsNullOrWhiteSpace(text) && text.Contains('?');
     }
 
     private void SaveTask(TaskBoard task)
