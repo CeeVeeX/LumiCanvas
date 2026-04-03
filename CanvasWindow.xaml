@@ -85,6 +85,8 @@
                     Padding="10,6"
                     HorizontalAlignment="Right"
                     VerticalAlignment="Top"
+                    IsTabStop="False"
+                    AllowFocusOnInteraction="False"
                     Click="CloseCanvasButton_Click">
                     <FontIcon Glyph="&#xE711;" />
                 </Button>
@@ -110,6 +112,26 @@
                             Foreground="#A9B6C8"
                             Text="&#x8FD9;&#x91CC;&#x662F;&#x72EC;&#x7ACB;&#x753B;&#x5E03;&#x7A97;&#x53E3;&#x3002;&#x53CC;&#x51FB;&#x7A7A;&#x767D;&#x5904;&#x521B;&#x5EFA;&#x6587;&#x672C;&#x7EC4;&#x4EF6;&#xFF0C;&#x53F3;&#x952E;&#x7A7A;&#x767D;&#x5904;&#x53EF;&#x6DFB;&#x52A0;&#x6587;&#x4EF6;&#x6216;&#x6587;&#x4EF6;&#x5939;&#x3002;&#x56FE;&#x7247;&#x548C;&#x89C6;&#x9891;&#x4F1A;&#x76F4;&#x63A5;&#x6E32;&#x67D3;&#xFF0C;&#x5176;&#x4ED6;&#x5185;&#x5BB9;&#x663E;&#x793A;&#x540D;&#x79F0;&#x3002;" />
                     </StackPanel>
+                </Border>
+
+                <Border
+                    x:Name="MiniMapContainer"
+                    Width="220"
+                    Height="140"
+                    Margin="16"
+                    Padding="8"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Bottom"
+                    Background="#8A111923"
+                    BorderBrush="#5FAFD1FF"
+                    BorderThickness="1"
+                    CornerRadius="10"
+                    IsHitTestVisible="False">
+                    <Canvas
+                        x:Name="MiniMapCanvas"
+                        Width="204"
+                        Height="124"
+                        Background="#22131B26" />
                 </Border>
             </Grid>
         </Border>

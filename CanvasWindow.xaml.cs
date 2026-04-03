@@ -41,6 +41,8 @@ public sealed partial class CanvasWindow : Window
     private const double MinimumFileHeight = 100;
     private const double MinimumTimeTagWidth = 240;
     private const double MinimumTimeTagHeight = 180;
+    private const double MiniMapPaddingWorld = 120;
+    private const double MiniMapCanvasPadding = 4;
     private const int GwlStyle = -16;
     private const int GwlExStyle = -20;
     private const int DwmwaWindowCornerPreference = 33;
@@ -78,6 +80,7 @@ public sealed partial class CanvasWindow : Window
     private AppWindow? _appWindow;
     private bool _isPanning;
     private bool _isDraggingItem;
+    private bool _isDragDeferredSaveActive;
     private bool _isResizingItem;
     private bool _isSelectingArea;
     private bool _isApplyingMarkdownHighlight;
@@ -90,6 +93,8 @@ public sealed partial class CanvasWindow : Window
     private Point _resizeStartPointerPosition;
     private Point _contextMenuWorldPoint;
     private Point _selectionStartPoint;
+    private Point _lastCanvasPointerPosition;
+    private bool _hasCanvasPointerPosition;
     private BoardItemModel? _draggedItem;
     private BoardItemModel? _resizedItem;
     private FrameworkElement? _pressedItemElement;
@@ -101,6 +106,7 @@ public sealed partial class CanvasWindow : Window
     private double _resizeStartWidth;
     private double _resizeStartHeight;
     private List<BoardItemModel> _activeDraggedItems = [];
+    private List<ClipboardBoardItemPayload> _copiedBoardItems = [];
 
     public CanvasWindow(WorkspaceSession session)
     {
@@ -114,6 +120,8 @@ public sealed partial class CanvasWindow : Window
         InitializeComponent();
         _hwnd = WindowNative.GetWindowHandle(this);
         RootGrid.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler(RootGrid_KeyDown), true);
+        InitializeClipboardIntegration();
+        CanvasViewport.SizeChanged += CanvasViewport_SizeChanged;
 
         ConfigureWindow();
         UpdateCommandState();
@@ -143,6 +151,7 @@ public sealed partial class CanvasWindow : Window
 
     public void Shutdown()
     {
+        UninitializeClipboardIntegration();
         _isInternalClose = true;
         Close();
     }
@@ -251,9 +260,30 @@ public sealed partial class CanvasWindow : Window
 
         if (e.Key == Windows.System.VirtualKey.V && IsControlPressed())
         {
-            await PasteFromClipboardAsync();
-            e.Handled = true;
-            return;
+            if (!IsTextInputFocused() && await PasteFromClipboardAsync())
+            {
+                e.Handled = true;
+                return;
+            }
+        }
+
+        if (e.Key == Windows.System.VirtualKey.C && IsControlPressed())
+        {
+            if (!IsTextInputFocused() && await CopySelectedItemsToClipboardAsync())
+            {
+                e.Handled = true;
+                return;
+            }
+        }
+
+        if (e.Key == Windows.System.VirtualKey.X && IsControlPressed())
+        {
+            if (!IsTextInputFocused() && await CopySelectedItemsToClipboardAsync())
+            {
+                DeleteSelectedItems();
+                e.Handled = true;
+                return;
+            }
         }
 
         if (e.Key == Windows.System.VirtualKey.Back)
@@ -564,6 +594,29 @@ public sealed partial class CanvasWindow : Window
         return ScreenToWorld(new Point(Math.Max(180, CanvasViewport.ActualWidth / 2), Math.Max(120, CanvasViewport.ActualHeight / 2)));
     }
 
+    private Point GetPreferredPasteWorldPoint()
+    {
+        if (_appWindow is not null && GetCursorPos(out var cursorScreenPoint))
+        {
+            var windowPosition = _appWindow.Position;
+            var rasterScale = Math.Max(0.0001, CanvasViewport.XamlRoot?.RasterizationScale ?? 1.0);
+            var localX = (cursorScreenPoint.X - windowPosition.X) / rasterScale;
+            var localY = (cursorScreenPoint.Y - windowPosition.Y) / rasterScale;
+            var x = Math.Clamp(localX, 0, Math.Max(0, CanvasViewport.ActualWidth));
+            var y = Math.Clamp(localY, 0, Math.Max(0, CanvasViewport.ActualHeight));
+            return ScreenToWorld(new Point(x, y));
+        }
+
+        if (_hasCanvasPointerPosition)
+        {
+            var x = Math.Clamp(_lastCanvasPointerPosition.X, 0, Math.Max(0, CanvasViewport.ActualWidth));
+            var y = Math.Clamp(_lastCanvasPointerPosition.Y, 0, Math.Max(0, CanvasViewport.ActualHeight));
+            return ScreenToWorld(new Point(x, y));
+        }
+
+        return GetViewportCenterWorldPoint();
+    }
+
     private Point ScreenToWorld(Point screenPoint)
     {
         return new Point((screenPoint.X - _offsetX) / _scale, (screenPoint.Y - _offsetY) / _scale);
@@ -575,6 +628,96 @@ public sealed partial class CanvasWindow : Window
         BoardTransform.ScaleY = _scale;
         BoardTransform.TranslateX = _offsetX;
         BoardTransform.TranslateY = _offsetY;
+        UpdateMiniMap();
+    }
+
+    private void CanvasViewport_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        UpdateMiniMap();
+    }
+
+    private void UpdateMiniMap()
+    {
+        if (MiniMapCanvas is null || MiniMapContainer is null)
+        {
+            return;
+        }
+
+        if (_session.CurrentTask is null)
+        {
+            MiniMapCanvas.Children.Clear();
+            MiniMapContainer.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        MiniMapContainer.Visibility = Visibility.Visible;
+
+        var mapWidth = Math.Max(1, MiniMapCanvas.Width - MiniMapCanvasPadding * 2);
+        var mapHeight = Math.Max(1, MiniMapCanvas.Height - MiniMapCanvasPadding * 2);
+
+        var visibleLeft = -_offsetX / _scale;
+        var visibleTop = -_offsetY / _scale;
+        var visibleWidth = Math.Max(1, CanvasViewport.ActualWidth / _scale);
+        var visibleHeight = Math.Max(1, CanvasViewport.ActualHeight / _scale);
+        var visibleRight = visibleLeft + visibleWidth;
+        var visibleBottom = visibleTop + visibleHeight;
+
+        var items = _session.CurrentTask.Items;
+        var hasItems = items.Count > 0;
+
+        var minX = hasItems ? items.Min(item => item.X) : visibleLeft;
+        var minY = hasItems ? items.Min(item => item.Y) : visibleTop;
+        var maxX = hasItems ? items.Max(item => item.X + item.Width) : visibleRight;
+        var maxY = hasItems ? items.Max(item => item.Y + item.Height) : visibleBottom;
+
+        minX = Math.Min(minX, visibleLeft) - MiniMapPaddingWorld;
+        minY = Math.Min(minY, visibleTop) - MiniMapPaddingWorld;
+        maxX = Math.Max(maxX, visibleRight) + MiniMapPaddingWorld;
+        maxY = Math.Max(maxY, visibleBottom) + MiniMapPaddingWorld;
+
+        var worldWidth = Math.Max(1, maxX - minX);
+        var worldHeight = Math.Max(1, maxY - minY);
+        var scale = Math.Min(mapWidth / worldWidth, mapHeight / worldHeight);
+
+        var contentWidth = worldWidth * scale;
+        var contentHeight = worldHeight * scale;
+        var originX = MiniMapCanvasPadding + (mapWidth - contentWidth) / 2;
+        var originY = MiniMapCanvasPadding + (mapHeight - contentHeight) / 2;
+
+        MiniMapCanvas.Children.Clear();
+
+        foreach (var item in items)
+        {
+            var rect = new Microsoft.UI.Xaml.Shapes.Rectangle
+            {
+                Width = Math.Max(2, item.Width * scale),
+                Height = Math.Max(2, item.Height * scale),
+                Fill = new SolidColorBrush(ColorHelper.FromArgb(120, 140, 190, 255)),
+                Stroke = new SolidColorBrush(ColorHelper.FromArgb(180, 190, 225, 255)),
+                StrokeThickness = 0.5,
+                RadiusX = 1,
+                RadiusY = 1,
+                IsHitTestVisible = false
+            };
+
+            Canvas.SetLeft(rect, originX + (item.X - minX) * scale);
+            Canvas.SetTop(rect, originY + (item.Y - minY) * scale);
+            MiniMapCanvas.Children.Add(rect);
+        }
+
+        var viewportRect = new Microsoft.UI.Xaml.Shapes.Rectangle
+        {
+            Width = Math.Max(4, visibleWidth * scale),
+            Height = Math.Max(4, visibleHeight * scale),
+            Fill = new SolidColorBrush(ColorHelper.FromArgb(35, 120, 188, 255)),
+            Stroke = new SolidColorBrush(ColorHelper.FromArgb(240, 120, 188, 255)),
+            StrokeThickness = 1,
+            IsHitTestVisible = false
+        };
+
+        Canvas.SetLeft(viewportRect, originX + (visibleLeft - minX) * scale);
+        Canvas.SetTop(viewportRect, originY + (visibleTop - minY) * scale);
+        MiniMapCanvas.Children.Add(viewportRect);
     }
 
     private void RenderCurrentBoard()
@@ -594,6 +737,7 @@ public sealed partial class CanvasWindow : Window
         }
 
         _highestZIndex = _session.CurrentTask.Items.Count == 0 ? 0 : _session.CurrentTask.Items.Max(item => item.ZIndex);
+        UpdateMiniMap();
     }
 
     private void BoardItem_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
@@ -631,8 +775,6 @@ public sealed partial class CanvasWindow : Window
             SetSelectedItems([item]);
         }
 
-        BringItemToFront(item, element);
-
         var pointerPoint = e.GetCurrentPoint(CanvasViewport);
         if (!pointerPoint.Properties.IsLeftButtonPressed || IsInteractiveElement(e.OriginalSource as DependencyObject))
         {
@@ -647,7 +789,7 @@ public sealed partial class CanvasWindow : Window
         _pressedItemElement = element;
         _pressedPointerPosition = pointerPoint.Position;
         _lastPointerPosition = pointerPoint.Position;
-        _session.BeginDeferredSave();
+        _isDragDeferredSaveActive = false;
         element.CapturePointer(e.Pointer);
         e.Handled = true;
     }
@@ -698,6 +840,12 @@ public sealed partial class CanvasWindow : Window
                 _isDraggingItem = true;
                 _draggedItem = _pressedItem;
                 _lastPointerPosition = currentPosition;
+                BringItemToFront(_draggedItem, element);
+                if (!_isDragDeferredSaveActive)
+                {
+                    _session.BeginDeferredSave();
+                    _isDragDeferredSaveActive = true;
+                }
             }
         }
 
@@ -721,6 +869,8 @@ public sealed partial class CanvasWindow : Window
             }
         }
 
+        UpdateMiniMap();
+
         _lastPointerPosition = currentPosition;
         e.Handled = true;
     }
@@ -737,7 +887,11 @@ public sealed partial class CanvasWindow : Window
         _activeDraggedItems.Clear();
         _pressedItem = null;
         _pressedItemElement = null;
-        _session.EndDeferredSave();
+        if (_isDragDeferredSaveActive)
+        {
+            _session.EndDeferredSave();
+            _isDragDeferredSaveActive = false;
+        }
         if (sender is FrameworkElement shellElement)
         {
             SetResizeHandleVisibility(shellElement, true);
@@ -794,6 +948,7 @@ public sealed partial class CanvasWindow : Window
         _resizedItem.Height = Math.Max(minimumHeight, _resizeStartHeight + deltaY);
         _resizeItemElement.Width = _resizedItem.Width;
         _resizeItemElement.Height = _resizedItem.Height;
+        UpdateMiniMap();
         e.Handled = true;
     }
 
@@ -1002,6 +1157,28 @@ public sealed partial class CanvasWindow : Window
     private static bool IsControlPressed()
     {
         return InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Control).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
+    }
+
+    private bool IsTextInputFocused()
+    {
+        var root = Content?.XamlRoot;
+        if (root is null)
+        {
+            return false;
+        }
+
+        var focused = FocusManager.GetFocusedElement(root) as DependencyObject;
+        while (focused is not null)
+        {
+            if (focused is TextBox or RichEditBox)
+            {
+                return true;
+            }
+
+            focused = VisualTreeHelper.GetParent(focused);
+        }
+
+        return false;
     }
 
     private bool ExitEditingIfNeeded(BoardItemModel? clickedItem)

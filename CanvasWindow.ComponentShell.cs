@@ -197,6 +197,7 @@ public sealed partial class CanvasWindow
         Canvas.SetZIndex(view, item.ZIndex);
         BoardCanvas.Children.Add(view);
         _highestZIndex = Math.Max(_highestZIndex, item.ZIndex);
+        UpdateMiniMap();
         return view;
     }
 
@@ -209,5 +210,6 @@ public sealed partial class CanvasWindow
 
         BoardCanvas.Children.Remove(view);
         _itemViews.Remove(itemId);
+        UpdateMiniMap();
     }
 }

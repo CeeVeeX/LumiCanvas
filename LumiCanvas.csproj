@@ -13,6 +13,10 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Remove="BenchmarkSuite1\**\*.cs" />
+    <None Remove="BenchmarkSuite1\**\*" />
+    <Content Remove="BenchmarkSuite1\**\*" />
+    <EmbeddedResource Remove="BenchmarkSuite1\**\*" />
     <Page Remove="CanvasWindow.xaml" />
   </ItemGroup>
 

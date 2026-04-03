@@ -67,6 +67,17 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
     private int _deferredSaveDepth;
     private bool _isLoading;
 
+    private sealed class TaskSaveSnapshot
+    {
+        public required Guid TaskId { get; init; }
+        public required string Json { get; init; }
+        public required string FinalPath { get; init; }
+        public required string TempPath { get; init; }
+        public required string? PreviousPath { get; init; }
+        public required string TaskRoot { get; init; }
+        public required string LegacyJsonPath { get; init; }
+    }
+
     public WorkspaceSession()
     {
         _storageFolder = Path.Combine(
@@ -632,13 +643,25 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
     {
         try
         {
-            await Task.Delay(250);
+            await Task.Delay(250, cancellationToken);
             if (cancellationToken.IsCancellationRequested)
             {
                 return;
             }
 
-            SaveTaskNow(task);
+            var snapshot = CreateTaskSaveSnapshot(task);
+            await Task.Run(() => WriteTaskArchive(snapshot, cancellationToken), cancellationToken);
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+
+            FinalizeTaskSave(snapshot);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
         }
         finally
         {
@@ -654,6 +677,13 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
     }
 
     private void SaveTaskNow(TaskBoard task)
+    {
+        var snapshot = CreateTaskSaveSnapshot(task);
+        WriteTaskArchive(snapshot, CancellationToken.None);
+        FinalizeTaskSave(snapshot);
+    }
+
+    private TaskSaveSnapshot CreateTaskSaveSnapshot(TaskBoard task)
     {
         var document = new TaskBoardDocument
         {
@@ -679,60 +709,91 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
             }).ToList()
         };
 
-        var json = JsonSerializer.Serialize(document, JsonOptions);
         var finalPath = ResolveArchivePath(task);
-        var tempPath = finalPath + ".tmp";
-        if (File.Exists(tempPath))
+        return new TaskSaveSnapshot
         {
-            File.Delete(tempPath);
+            TaskId = task.Id,
+            Json = JsonSerializer.Serialize(document, JsonOptions),
+            FinalPath = finalPath,
+            TempPath = finalPath + ".tmp",
+            PreviousPath = _taskArchivePaths.GetValueOrDefault(task.Id),
+            TaskRoot = Path.Combine(_taskAssetCacheFolder, task.Id.ToString("N")),
+            LegacyJsonPath = Path.Combine(_storageFolder, $"{task.Id}.json")
+        };
+    }
+
+    private void WriteTaskArchive(TaskSaveSnapshot snapshot, CancellationToken cancellationToken)
+    {
+        if (File.Exists(snapshot.TempPath))
+        {
+            File.Delete(snapshot.TempPath);
         }
 
-        var previousPath = _taskArchivePaths.GetValueOrDefault(task.Id);
-
-        using (var archive = ZipFile.Open(tempPath, ZipArchiveMode.Create))
+        try
         {
-            var jsonEntry = archive.CreateEntry(ArchiveJsonEntryName, CompressionLevel.Optimal);
-            using (var entryStream = jsonEntry.Open())
-            using (var writer = new StreamWriter(entryStream))
+            using (var archive = ZipFile.Open(snapshot.TempPath, ZipArchiveMode.Create))
             {
-                writer.Write(json);
-            }
-
-            var taskRoot = Path.Combine(_taskAssetCacheFolder, task.Id.ToString("N"));
-            var assetsRoot = Path.Combine(taskRoot, "assets");
-            if (Directory.Exists(assetsRoot))
-            {
-                foreach (var file in Directory.EnumerateFiles(assetsRoot, "*", SearchOption.AllDirectories))
+                var jsonEntry = archive.CreateEntry(ArchiveJsonEntryName, CompressionLevel.Optimal);
+                using (var entryStream = jsonEntry.Open())
+                using (var writer = new StreamWriter(entryStream))
                 {
-                    var relativeEntry = Path.GetRelativePath(taskRoot, file).Replace(Path.DirectorySeparatorChar, '/');
-                    archive.CreateEntryFromFile(file, relativeEntry, CompressionLevel.Optimal);
+                    writer.Write(snapshot.Json);
+                }
+
+                var assetsRoot = Path.Combine(snapshot.TaskRoot, "assets");
+                if (Directory.Exists(assetsRoot))
+                {
+                    foreach (var file in Directory.EnumerateFiles(assetsRoot, "*", SearchOption.AllDirectories))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var relativeEntry = Path.GetRelativePath(snapshot.TaskRoot, file).Replace(Path.DirectorySeparatorChar, '/');
+                        archive.CreateEntryFromFile(file, relativeEntry, CompressionLevel.Optimal);
+                    }
                 }
             }
-        }
 
-        File.Move(tempPath, finalPath, true);
-        SetArchivePathMapping(task.Id, finalPath);
+            File.Move(snapshot.TempPath, snapshot.FinalPath, true);
+        }
+        catch
+        {
+            if (File.Exists(snapshot.TempPath))
+            {
+                try
+                {
+                    File.Delete(snapshot.TempPath);
+                }
+                catch
+                {
+                }
+            }
+
+            throw;
+        }
+    }
+
+    private void FinalizeTaskSave(TaskSaveSnapshot snapshot)
+    {
+        SetArchivePathMapping(snapshot.TaskId, snapshot.FinalPath);
         SaveTaskMenuIndex();
 
-        if (!string.IsNullOrWhiteSpace(previousPath) &&
-            !string.Equals(previousPath, finalPath, StringComparison.OrdinalIgnoreCase) &&
-            File.Exists(previousPath))
+        if (!string.IsNullOrWhiteSpace(snapshot.PreviousPath) &&
+            !string.Equals(snapshot.PreviousPath, snapshot.FinalPath, StringComparison.OrdinalIgnoreCase) &&
+            File.Exists(snapshot.PreviousPath))
         {
             try
             {
-                File.Delete(previousPath);
+                File.Delete(snapshot.PreviousPath);
             }
             catch
             {
             }
         }
 
-        var legacyJsonPath = Path.Combine(_storageFolder, $"{task.Id}.json");
-        if (File.Exists(legacyJsonPath))
+        if (File.Exists(snapshot.LegacyJsonPath))
         {
             try
             {
-                File.Delete(legacyJsonPath);
+                File.Delete(snapshot.LegacyJsonPath);
             }
             catch
             {

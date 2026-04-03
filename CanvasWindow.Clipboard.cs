@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices.WindowsRuntime;
@@ -11,16 +12,137 @@ namespace LumiCanvas;
 
 public sealed partial class CanvasWindow
 {
-    private async Task PasteFromClipboardAsync()
+    private sealed class ClipboardBoardItemPayload
+    {
+        public BoardItemKind Kind { get; set; }
+        public double X { get; set; }
+        public double Y { get; set; }
+        public double Width { get; set; }
+        public double Height { get; set; }
+        public int ZIndex { get; set; }
+        public string? Content { get; set; }
+        public string? SourcePath { get; set; }
+        public DateTimeOffset? TimeTagDueAt { get; set; }
+        public bool TimeTagReminderEnabled { get; set; }
+        public TimeTagRecurrence TimeTagRecurrence { get; set; }
+        public DateTimeOffset? TimeTagLastReminderAt { get; set; }
+        public string? TimeTagMonthlyDays { get; set; }
+    }
+
+    private void InitializeClipboardIntegration()
+    {
+        Clipboard.ContentChanged += Clipboard_ContentChanged;
+    }
+
+    private void UninitializeClipboardIntegration()
+    {
+        Clipboard.ContentChanged -= Clipboard_ContentChanged;
+    }
+
+    private void Clipboard_ContentChanged(object? sender, object e)
+    {
+        _copiedBoardItems.Clear();
+    }
+
+    private Task<bool> CopySelectedItemsToClipboardAsync()
+    {
+        if (_session.CurrentTask is null || _selectedItemIds.Count == 0)
+        {
+            return Task.FromResult(false);
+        }
+
+        var selectedItems = _session.CurrentTask.Items
+            .Where(item => _selectedItemIds.Contains(item.Id))
+            .OrderBy(item => item.ZIndex)
+            .ToList();
+
+        if (selectedItems.Count == 0)
+        {
+            return Task.FromResult(false);
+        }
+
+        _copiedBoardItems = selectedItems.Select(item => new ClipboardBoardItemPayload
+        {
+            Kind = item.Kind,
+            X = item.X,
+            Y = item.Y,
+            Width = item.Width,
+            Height = item.Height,
+            ZIndex = item.ZIndex,
+            Content = item.Content,
+            SourcePath = item.SourcePath,
+            TimeTagDueAt = item.TimeTagDueAt,
+            TimeTagReminderEnabled = item.TimeTagReminderEnabled,
+            TimeTagRecurrence = item.TimeTagRecurrence,
+            TimeTagLastReminderAt = item.TimeTagLastReminderAt,
+            TimeTagMonthlyDays = item.TimeTagMonthlyDays
+        }).ToList();
+
+        return Task.FromResult(_copiedBoardItems.Count > 0);
+    }
+
+    private async Task<bool> PasteCopiedItemsAsync(Windows.Foundation.Point position)
+    {
+        if (_session.CurrentTask is null || _copiedBoardItems.Count == 0)
+        {
+            return false;
+        }
+
+        var minX = _copiedBoardItems.Min(item => item.X);
+        var minY = _copiedBoardItems.Min(item => item.Y);
+        var pastedItems = new List<BoardItemModel>(_copiedBoardItems.Count);
+
+        _session.BeginDeferredSave();
+        try
+        {
+            foreach (var item in _copiedBoardItems)
+            {
+                var pastedItem = new BoardItemModel
+                {
+                    Kind = item.Kind,
+                    X = position.X + (item.X - minX),
+                    Y = position.Y + (item.Y - minY),
+                    Width = item.Width,
+                    Height = item.Height,
+                    ZIndex = _highestZIndex + 1,
+                    Content = item.Content,
+                    SourcePath = await CloneSourcePathForPasteAsync(item.SourcePath),
+                    TimeTagDueAt = item.TimeTagDueAt,
+                    TimeTagReminderEnabled = item.TimeTagReminderEnabled,
+                    TimeTagRecurrence = item.TimeTagRecurrence,
+                    TimeTagLastReminderAt = item.TimeTagLastReminderAt,
+                    TimeTagMonthlyDays = item.TimeTagMonthlyDays
+                };
+
+                _session.CurrentTask.Items.Add(pastedItem);
+                AddBoardItemView(pastedItem);
+                pastedItems.Add(pastedItem);
+            }
+        }
+        finally
+        {
+            _session.EndDeferredSave();
+        }
+
+        SetSelectedItems(pastedItems);
+        return pastedItems.Count > 0;
+    }
+
+    private async Task<bool> PasteFromClipboardAsync()
     {
         if (_session.CurrentTask is null)
         {
-            return;
+            return false;
         }
 
         var dataPackage = Clipboard.GetContent();
-        var position = GetViewportCenterWorldPoint();
+        var position = GetPreferredPasteWorldPoint();
         var hasChanges = false;
+
+        if (await PasteCopiedItemsAsync(position))
+        {
+            return true;
+        }
 
         if (dataPackage.Contains(StandardDataFormats.StorageItems))
         {
@@ -73,6 +195,21 @@ public sealed partial class CanvasWindow
                 hasChanges = true;
             }
         }
+
+        return hasChanges;
+    }
+
+    private async Task<string?> CloneSourcePathForPasteAsync(string? sourcePath)
+    {
+        if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
+        {
+            return sourcePath;
+        }
+
+        var extension = Path.GetExtension(sourcePath);
+        var targetPath = BuildTaskAssetPath(extension);
+        await Task.Run(() => File.Copy(sourcePath, targetPath, overwrite: true));
+        return targetPath;
     }
 
     private void AddPastedMediaItem(BoardItemKind kind, string sourcePath, Windows.Foundation.Point position)
