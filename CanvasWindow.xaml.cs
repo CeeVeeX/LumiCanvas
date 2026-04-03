@@ -188,6 +188,7 @@ public sealed partial class CanvasWindow : Window
     public void ShowTask(TaskBoard task)
     {
         _session.CurrentTask = task;
+        _session.EnsureTaskAssetsCacheAvailable(task.Id);
         _scale = double.IsFinite(task.CanvasScale) ? Math.Clamp(task.CanvasScale, 0.25, 4.5) : 1;
         _offsetX = double.IsFinite(task.CanvasOffsetX) ? task.CanvasOffsetX : 0;
         _offsetY = double.IsFinite(task.CanvasOffsetY) ? task.CanvasOffsetY : 0;
@@ -298,19 +299,34 @@ public sealed partial class CanvasWindow : Window
 
     private void BackToSidebarButton_Click(object sender, RoutedEventArgs e)
     {
-        ReturnToSidebar();
+        _ = ReturnToSidebarAsync();
     }
 
     private void CloseCanvasButton_Click(object sender, RoutedEventArgs e)
     {
-        ReturnToSidebar();
+        _ = ReturnToSidebarAsync();
+    }
+
+    private void OpenCacheFolderButton_Click(object sender, RoutedEventArgs e)
+    {
+        var cachePath = _session.CurrentTask is null
+            ? _session.TaskAssetsCacheFolderPath
+            : _session.GetTaskAssetsDirectory(_session.CurrentTask.Id);
+
+        Directory.CreateDirectory(cachePath);
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = "explorer.exe",
+            Arguments = $"/root,\"{cachePath}\"",
+            UseShellExecute = true
+        });
     }
 
     private async void RootGrid_KeyDown(object sender, KeyRoutedEventArgs e)
     {
         if (e.Key == Windows.System.VirtualKey.Escape)
         {
-            ReturnToSidebar();
+            await ReturnToSidebarAsync();
             e.Handled = true;
             return;
         }
@@ -384,10 +400,41 @@ public sealed partial class CanvasWindow : Window
         ClearSelectedItems();
     }
 
-    private void ReturnToSidebar()
+    private async Task ReturnToSidebarAsync()
     {
+        await CommitEditingStateAsync();
+        _session.Flush();
+        _session.ClearTaskAssetsCache();
         HideWindow();
         SidebarRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    public async Task CommitEditingStateAsync()
+    {
+        if (_session.CurrentTask is null)
+        {
+            return;
+        }
+
+        var editingItems = _session.CurrentTask.Items
+            .Where(item => item.Kind == BoardItemKind.Markdown && item.IsEditing)
+            .ToList();
+
+        if (editingItems.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var item in editingItems)
+        {
+            await TryCommitMarkdownEditorContentAsync(item);
+            item.IsEditing = false;
+        }
+
+        _markdownHighlightTimer.Stop();
+        _pendingHighlightEditor = null;
+        _pendingFocusItemId = null;
+        RenderCurrentBoard();
     }
 
     private void UpdateCommandState()
@@ -569,7 +616,7 @@ public sealed partial class CanvasWindow : Window
         AddBoardItemView(item);
     }
 
-    private void CanvasViewport_PointerPressed(object sender, PointerRoutedEventArgs e)
+    private async void CanvasViewport_PointerPressed(object sender, PointerRoutedEventArgs e)
     {
         if (_session.CurrentTask is null)
         {
@@ -577,7 +624,7 @@ public sealed partial class CanvasWindow : Window
         }
 
         var clickedItem = FindBoardItemFromSource(e.OriginalSource as DependencyObject);
-        if (ExitEditingIfNeeded(clickedItem))
+        if (await ExitEditingIfNeededAsync(clickedItem))
         {
             e.Handled = true;
             return;
@@ -1490,7 +1537,7 @@ public sealed partial class CanvasWindow : Window
         return false;
     }
 
-    private bool ExitEditingIfNeeded(BoardItemModel? clickedItem)
+    private async Task<bool> ExitEditingIfNeededAsync(BoardItemModel? clickedItem)
     {
         if (_session.CurrentTask is null)
         {
@@ -1508,12 +1555,66 @@ public sealed partial class CanvasWindow : Window
             return false;
         }
 
+        await TryCommitMarkdownEditorContentAsync(editingItem);
         editingItem.IsEditing = false;
         _markdownHighlightTimer.Stop();
         _pendingHighlightEditor = null;
         _pendingFocusItemId = null;
         RenderCurrentBoard();
         return true;
+    }
+
+    private async Task TryCommitMarkdownEditorContentAsync(BoardItemModel item)
+    {
+        if (item.Kind != BoardItemKind.Markdown || !_itemViews.TryGetValue(item.Id, out var shell))
+        {
+            return;
+        }
+
+        var webView = FindDescendant<WebView2>(shell);
+        if (webView is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var raw = await webView.ExecuteScriptAsync("window.getMarkdownValue ? window.getMarkdownValue() : null;");
+            if (string.IsNullOrWhiteSpace(raw) || string.Equals(raw, "null", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var text = JsonSerializer.Deserialize<string>(raw);
+            if (text is not null)
+            {
+                item.Content = NormalizeEditorText(text);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static T? FindDescendant<T>(DependencyObject root) where T : DependencyObject
+    {
+        if (root is T target)
+        {
+            return target;
+        }
+
+        var childrenCount = VisualTreeHelper.GetChildrenCount(root);
+        for (var index = 0; index < childrenCount; index++)
+        {
+            var child = VisualTreeHelper.GetChild(root, index);
+            var result = FindDescendant<T>(child);
+            if (result is not null)
+            {
+                return result;
+            }
+        }
+
+        return null;
     }
 
     private void SetEditingItem(BoardItemModel editingItem)

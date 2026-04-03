@@ -47,9 +47,6 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
     private const string ArchiveExtension = ".lumi";
     private const string ArchiveJsonEntryName = "task.json";
     private const string TaskMenuFileName = "task-menu.json";
-    private const string StartupBoardTitle = "LumiCanvas 启动板";
-    private const string DefaultMarkdownContent = "# 新笔记";
-    private const string StartupBoardMarkdownContent = "# 欢迎使用 LumiCanvas\n\n- `Ctrl + Tab` 唤醒桌面侧边栏\n- 点击任务打开独立画布窗口\n- 双击画布空白处创建文本组件\n- 右键空白处添加文件，图片和视频会直接渲染";
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true
@@ -63,6 +60,8 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
     private readonly Dictionary<Guid, TaskBoard> _deferredSaveTasks = [];
     private readonly Dictionary<Guid, string> _taskArchivePaths = [];
     private readonly Dictionary<string, Guid> _archivePathToTaskId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<Guid, List<TaskAssetSnapshot>> _taskAssetsMemoryCache = [];
+    private readonly object _taskAssetsMemoryCacheLock = new();
     private TaskBoard? _currentTask;
     private int _deferredSaveDepth;
     private bool _isLoading;
@@ -76,6 +75,12 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
         public required string? PreviousPath { get; init; }
         public required string TaskRoot { get; init; }
         public required string LegacyJsonPath { get; init; }
+    }
+
+    private sealed class TaskAssetSnapshot
+    {
+        public required string RelativePath { get; init; }
+        public required byte[] Content { get; init; }
     }
 
     public WorkspaceSession()
@@ -98,29 +103,58 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
             TrySetHiddenAttribute(_taskMenuIndexPath);
         }
         LoadTasks();
-
-        if (Tasks.Count == 0)
-        {
-            var board = new TaskBoard(StartupBoardTitle);
-            board.Items.Add(new BoardItemModel
-            {
-                Kind = BoardItemKind.Markdown,
-                X = 180,
-                Y = 160,
-                Width = 380,
-                Height = 260,
-                Content = StartupBoardMarkdownContent
-            });
-
-            RegisterTask(board);
-            Tasks.Add(board);
-            SaveTaskNow(board);
-        }
     }
 
     public ObservableCollection<TaskBoard> Tasks { get; } = [];
 
     public string StorageFolderPath => _storageFolder;
+
+    public string TaskAssetsCacheFolderPath => _taskAssetCacheFolder;
+
+    public void EnsureTaskAssetsCacheAvailable(Guid taskId)
+    {
+        if (!_taskArchivePaths.TryGetValue(taskId, out var archivePath) ||
+            string.IsNullOrWhiteSpace(archivePath) ||
+            !File.Exists(archivePath))
+        {
+            return;
+        }
+
+        try
+        {
+            var taskRoot = Path.Combine(_taskAssetCacheFolder, taskId.ToString("N"));
+            var assetsRoot = Path.Combine(taskRoot, "assets");
+            if (TryRestoreTaskAssetsFromMemoryCache(taskId, taskRoot))
+            {
+                return;
+            }
+
+            Directory.CreateDirectory(assetsRoot);
+
+            using var zip = ZipFile.OpenRead(archivePath);
+            foreach (var entry in zip.Entries.Where(entry =>
+                         entry.FullName.StartsWith("assets/", StringComparison.OrdinalIgnoreCase) &&
+                         !string.IsNullOrEmpty(entry.Name)))
+            {
+                var relativePath = entry.FullName.Replace('/', Path.DirectorySeparatorChar);
+                var targetPath = Path.Combine(taskRoot, relativePath);
+                var targetDirectory = Path.GetDirectoryName(targetPath);
+                if (!string.IsNullOrWhiteSpace(targetDirectory))
+                {
+                    Directory.CreateDirectory(targetDirectory);
+                }
+
+                if (!File.Exists(targetPath))
+                {
+                    entry.ExtractToFile(targetPath, overwrite: true);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            App.WriteDiagnostic($"WorkspaceSession.EnsureTaskAssetsCacheAvailable: {taskId}", ex);
+        }
+    }
 
     public string GetTaskAssetsDirectory(Guid taskId)
     {
@@ -159,12 +193,28 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
 
     public void Flush()
     {
+        CancelPendingSaves();
+
         foreach (var task in Tasks)
         {
             SaveTaskNow(task);
         }
 
         SaveTaskMenuIndex();
+    }
+
+    private void CancelPendingSaves()
+    {
+        lock (_pendingSaves)
+        {
+            foreach (var cts in _pendingSaves.Values)
+            {
+                cts.Cancel();
+                cts.Dispose();
+            }
+
+            _pendingSaves.Clear();
+        }
     }
 
     public bool TryEnsureTaskFromArchivePath(string archivePath, out TaskBoard? task)
@@ -198,7 +248,7 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
 
         try
         {
-            var loadedTask = LoadTaskBoardFromArchive(normalizedPath, out var wasMigrated);
+            var loadedTask = LoadTaskBoardFromArchive(normalizedPath);
             if (loadedTask is null)
             {
                 return false;
@@ -210,11 +260,6 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
             Tasks.Add(loadedTask);
             SetArchivePathMapping(loadedTask.Id, normalizedPath);
             SaveTaskMenuIndex();
-
-            if (wasMigrated)
-            {
-                SaveTaskNow(loadedTask);
-            }
 
             task = loadedTask;
             return true;
@@ -295,6 +340,8 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
             return;
         }
 
+        SnapshotTaskAssetsIntoMemoryCache();
+
         try
         {
             Directory.Delete(_taskAssetCacheFolder, recursive: true);
@@ -351,7 +398,7 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
                         continue;
                     }
 
-                    var board = LoadTaskBoardFromArchive(file, out var wasMigrated);
+                    var board = LoadTaskBoardFromArchive(file);
                     if (board is null)
                     {
                         continue;
@@ -362,11 +409,6 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
                     RegisterTask(board);
                     Tasks.Add(board);
                     SetArchivePathMapping(board.Id, file);
-
-                    if (wasMigrated)
-                    {
-                        SaveTaskNow(board);
-                    }
                 }
                 catch (Exception ex)
                 {
@@ -420,9 +462,8 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
         return replacement;
     }
 
-    private TaskBoard? LoadTaskBoardFromArchive(string archivePath, out bool wasMigrated)
+    private TaskBoard? LoadTaskBoardFromArchive(string archivePath)
     {
-        wasMigrated = false;
         using var zip = ZipFile.OpenRead(archivePath);
         var jsonEntry = zip.GetEntry(ArchiveJsonEntryName);
         if (jsonEntry is null)
@@ -438,8 +479,6 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
         {
             return null;
         }
-
-        wasMigrated = SanitizeLoadedDocument(document);
 
         var taskRoot = Path.Combine(_taskAssetCacheFolder, document.Id.ToString("N"));
         var taskAssetRoot = Path.Combine(taskRoot, "assets");
@@ -652,44 +691,6 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
         SaveTask(task);
     }
 
-    private static bool SanitizeLoadedDocument(TaskBoardDocument document)
-    {
-        var changed = false;
-        var isStartupBoard = string.Equals(document.Title, StartupBoardTitle, StringComparison.Ordinal) ||
-                             document.Title.Contains("LumiCanvas", StringComparison.OrdinalIgnoreCase);
-
-        foreach (var item in document.Items)
-        {
-            if (item.Kind != BoardItemKind.Markdown)
-            {
-                continue;
-            }
-
-            if (isStartupBoard)
-            {
-                if (NeedsStartupBoardReset(item.Content))
-                {
-                    item.Content = StartupBoardMarkdownContent;
-                    changed = true;
-                }
-
-                continue;
-            }
-        }
-
-        return changed;
-    }
-
-    private static bool NeedsStartupBoardReset(string? content)
-    {
-        if (string.IsNullOrWhiteSpace(content))
-        {
-            return true;
-        }
-
-        return !string.Equals(content, StartupBoardMarkdownContent, StringComparison.Ordinal);
-    }
-
     private void SaveTask(TaskBoard task)
     {
         lock (_pendingSaves)
@@ -794,6 +795,11 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
 
     private void WriteTaskArchive(TaskSaveSnapshot snapshot, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        EnsureTaskAssetsCacheAvailable(snapshot.TaskId);
+        cancellationToken.ThrowIfCancellationRequested();
+
         if (File.Exists(snapshot.TempPath))
         {
             File.Delete(snapshot.TempPath);
@@ -822,6 +828,7 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
                 }
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             File.Move(snapshot.TempPath, snapshot.FinalPath, true);
         }
         catch
@@ -1029,6 +1036,78 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
     private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+    }
+
+    private void SnapshotTaskAssetsIntoMemoryCache()
+    {
+        lock (_taskAssetsMemoryCacheLock)
+        {
+            _taskAssetsMemoryCache.Clear();
+
+            if (!Directory.Exists(_taskAssetCacheFolder))
+            {
+                return;
+            }
+
+            foreach (var taskRoot in Directory.EnumerateDirectories(_taskAssetCacheFolder))
+            {
+                var taskIdText = Path.GetFileName(taskRoot);
+                if (!Guid.TryParseExact(taskIdText, "N", out var taskId))
+                {
+                    continue;
+                }
+
+                var assetsRoot = Path.Combine(taskRoot, "assets");
+                if (!Directory.Exists(assetsRoot))
+                {
+                    continue;
+                }
+
+                var snapshots = new List<TaskAssetSnapshot>();
+                foreach (var file in Directory.EnumerateFiles(assetsRoot, "*", SearchOption.AllDirectories))
+                {
+                    var relativePath = Path.GetRelativePath(taskRoot, file).Replace(Path.DirectorySeparatorChar, '/');
+                    snapshots.Add(new TaskAssetSnapshot
+                    {
+                        RelativePath = relativePath,
+                        Content = File.ReadAllBytes(file)
+                    });
+                }
+
+                if (snapshots.Count > 0)
+                {
+                    _taskAssetsMemoryCache[taskId] = snapshots;
+                }
+            }
+        }
+    }
+
+    private bool TryRestoreTaskAssetsFromMemoryCache(Guid taskId, string taskRoot)
+    {
+        List<TaskAssetSnapshot>? snapshots;
+        lock (_taskAssetsMemoryCacheLock)
+        {
+            if (!_taskAssetsMemoryCache.TryGetValue(taskId, out var cached) || cached.Count == 0)
+            {
+                return false;
+            }
+
+            snapshots = cached;
+        }
+
+        foreach (var snapshot in snapshots)
+        {
+            var targetPath = Path.Combine(taskRoot, snapshot.RelativePath.Replace('/', Path.DirectorySeparatorChar));
+            var targetDirectory = Path.GetDirectoryName(targetPath);
+            if (!string.IsNullOrWhiteSpace(targetDirectory))
+            {
+                Directory.CreateDirectory(targetDirectory);
+            }
+
+            File.WriteAllBytes(targetPath, snapshot.Content);
+        }
+
+        return snapshots.Count > 0;
     }
 
     private sealed class TaskMenuDocument

@@ -355,10 +355,11 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void MainWindow_Closed(object sender, WindowEventArgs args)
+    private async void MainWindow_Closed(object sender, WindowEventArgs args)
     {
         _isExitRequested = true;
         _timeTagReminderTimer.Stop();
+        await _canvasWindow.CommitEditingStateAsync();
         _session.Flush();
         UnregisterHotKey(_hwnd, HotKeyId);
         RemoveTrayIcon();
@@ -784,10 +785,11 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void ExitApplication()
+    private async void ExitApplication()
     {
         _isExitRequested = true;
         _timeTagReminderTimer.Stop();
+        await _canvasWindow.CommitEditingStateAsync();
         _session.Flush();
         RemoveTrayIcon();
         _canvasWindow.Shutdown();

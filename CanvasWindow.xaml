@@ -93,6 +93,19 @@
                     <FontIcon Glyph="&#xE711;" />
                 </Button>
 
+                <Button
+                    Margin="16,16,68,0"
+                    MinWidth="40"
+                    Padding="10,6"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Top"
+                    IsTabStop="False"
+                    AllowFocusOnInteraction="False"
+                    ToolTipService.ToolTip="打开缓存目录"
+                    Click="OpenCacheFolderButton_Click">
+                    <FontIcon Glyph="&#xE838;" />
+                </Button>
+
                 <Border
                     x:Name="EmptyBoardHintCard"
                     Width="360"

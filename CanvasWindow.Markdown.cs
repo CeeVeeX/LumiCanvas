@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -20,6 +21,11 @@ namespace LumiCanvas;
 
 public sealed partial class CanvasWindow
 {
+    private static readonly object WebView2EnvironmentLock = new();
+    private static readonly object EmbeddedWebAssetsLock = new();
+    private static Task<CoreWebView2Environment>? _webView2EnvironmentTask;
+    private static string? _embeddedWebAssetsPath;
+
     private FrameworkElement BuildMarkdownCard(BoardItemModel item)
     {
         var layout = new Grid();
@@ -229,11 +235,14 @@ public sealed partial class CanvasWindow
             return CreateStyledTextBlock(line[2..], 28, BoldWeight);
         }
 
-        if (line.StartsWith("- ", StringComparison.Ordinal) || line.StartsWith("* ", StringComparison.Ordinal))
+        if (TryCreateMarkdownBulletLine(line, out var bulletElement))
         {
-            var bulletLine = CreateStyledTextBlock($"\u2022 {line[2..]}", 14, NormalWeight);
-            bulletLine.FontFamily = new FontFamily("Segoe UI Symbol");
-            return bulletLine;
+            return bulletElement;
+        }
+
+        if (TryCreateMarkdownOrderedLine(line, out var orderedElement))
+        {
+            return orderedElement;
         }
 
         if (line.StartsWith("> ", StringComparison.Ordinal))
@@ -244,6 +253,122 @@ public sealed partial class CanvasWindow
         }
 
         return CreateStyledTextBlock(line, 14, NormalWeight);
+    }
+
+    private bool TryCreateMarkdownBulletLine(string line, out FrameworkElement bulletElement)
+    {
+        bulletElement = null!;
+        if (string.IsNullOrEmpty(line))
+        {
+            return false;
+        }
+
+        var index = 0;
+        var indentUnits = 0;
+        while (index < line.Length)
+        {
+            if (line[index] == ' ')
+            {
+                var spaces = 0;
+                while (index < line.Length && line[index] == ' ')
+                {
+                    spaces++;
+                    index++;
+                }
+
+                indentUnits += spaces / 2;
+                continue;
+            }
+
+            if (line[index] == '\t')
+            {
+                indentUnits += 2;
+                index++;
+                continue;
+            }
+
+            break;
+        }
+
+        if (index + 1 >= line.Length || (line[index] != '-' && line[index] != '*') || line[index + 1] != ' ')
+        {
+            return false;
+        }
+
+        var content = line[(index + 2)..];
+        var bullet = (indentUnits % 3) switch
+        {
+            1 => "◦",
+            2 => "▪",
+            _ => "•"
+        };
+
+        var bulletLine = CreateStyledTextBlock($"{bullet} {content}", 14, NormalWeight);
+        bulletLine.FontFamily = new FontFamily("Segoe UI Symbol");
+        bulletLine.Margin = new Thickness(indentUnits * 12, 0, 0, 0);
+        bulletElement = bulletLine;
+        return true;
+    }
+
+    private bool TryCreateMarkdownOrderedLine(string line, out FrameworkElement orderedElement)
+    {
+        orderedElement = null!;
+        if (string.IsNullOrEmpty(line))
+        {
+            return false;
+        }
+
+        var index = 0;
+        var indentUnits = 0;
+        while (index < line.Length)
+        {
+            if (line[index] == ' ')
+            {
+                var spaces = 0;
+                while (index < line.Length && line[index] == ' ')
+                {
+                    spaces++;
+                    index++;
+                }
+
+                indentUnits += spaces / 2;
+                continue;
+            }
+
+            if (line[index] == '\t')
+            {
+                indentUnits += 2;
+                index++;
+                continue;
+            }
+
+            break;
+        }
+
+        var markerStart = index;
+        while (index < line.Length && char.IsDigit(line[index]))
+        {
+            index++;
+        }
+
+        if (index == markerStart || index + 1 >= line.Length)
+        {
+            return false;
+        }
+
+        var markerEnd = index;
+        var delimiter = line[index];
+        if ((delimiter != '.' && delimiter != ')') || line[index + 1] != ' ')
+        {
+            return false;
+        }
+
+        var marker = line[markerStart..(markerEnd + 1)];
+        var content = line[(index + 2)..];
+        var orderedLine = CreateStyledTextBlock($"{marker} {content}", 14, NormalWeight);
+        orderedLine.Margin = new Thickness(indentUnits * 12, 0, 0, 0);
+        orderedElement = orderedLine;
+        return true;
     }
 
     private TextBlock CreateStyledTextBlock(string text, double fontSize, FontText.FontWeight fontWeight)
@@ -447,10 +572,11 @@ public sealed partial class CanvasWindow
         return Math.Min(first, second);
     }
 
-    private void MarkdownDoneButton_Click(object sender, RoutedEventArgs e)
+    private async void MarkdownDoneButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is Button button && button.Tag is BoardItemModel item)
         {
+            await TryCommitMarkdownEditorContentAsync(item);
             _markdownHighlightTimer.Stop();
             _pendingHighlightEditor = null;
             item.IsEditing = false;
@@ -478,7 +604,8 @@ public sealed partial class CanvasWindow
             }
         }
 
-        await editor.EnsureCoreWebView2Async();
+        var environment = await GetWebView2EnvironmentAsync();
+        await editor.EnsureCoreWebView2Async(environment);
 
         var monacoLoaderUrl = ConfigureMonacoLocalAssets(editor);
         var monacoVsBaseUrl = string.IsNullOrWhiteSpace(monacoLoaderUrl)
@@ -495,10 +622,10 @@ public sealed partial class CanvasWindow
             return null;
         }
 
-        var webAssetsPath = Path.Combine(AppContext.BaseDirectory, "WebAssets");
-        var monacoPath = Path.Combine(webAssetsPath, "Monaco", "min", "vs", "loader.js");
-        if (!File.Exists(monacoPath))
+        var webAssetsPath = ResolveWebAssetsPath();
+        if (string.IsNullOrWhiteSpace(webAssetsPath))
         {
+            App.WriteDiagnostic("CanvasWindow.ConfigureMonacoLocalAssets", new FileNotFoundException("WebAssets not found for Monaco."));
             return null;
         }
 
@@ -508,6 +635,115 @@ public sealed partial class CanvasWindow
             CoreWebView2HostResourceAccessKind.Allow);
 
         return "https://appassets/Monaco/min/vs/loader.js";
+    }
+
+    private static string? ResolveWebAssetsPath()
+    {
+        if (!string.IsNullOrWhiteSpace(_embeddedWebAssetsPath) &&
+            File.Exists(Path.Combine(_embeddedWebAssetsPath, "Monaco", "min", "vs", "loader.js")))
+        {
+            return _embeddedWebAssetsPath;
+        }
+
+        var searchRoots = new[]
+        {
+            AppContext.BaseDirectory,
+            AppDomain.CurrentDomain.BaseDirectory,
+            Path.GetDirectoryName(Environment.ProcessPath ?? string.Empty) ?? string.Empty,
+            Directory.GetCurrentDirectory()
+        }
+        .Where(path => !string.IsNullOrWhiteSpace(path))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+        foreach (var root in searchRoots)
+        {
+            var candidate = Path.Combine(root, "WebAssets");
+            if (File.Exists(Path.Combine(candidate, "Monaco", "min", "vs", "loader.js")))
+            {
+                return candidate;
+            }
+        }
+
+        var extractedPath = EnsureEmbeddedWebAssetsExtracted();
+        if (!string.IsNullOrWhiteSpace(extractedPath) &&
+            File.Exists(Path.Combine(extractedPath, "Monaco", "min", "vs", "loader.js")))
+        {
+            return extractedPath;
+        }
+
+        return null;
+    }
+
+    private static string? EnsureEmbeddedWebAssetsExtracted()
+    {
+        lock (EmbeddedWebAssetsLock)
+        {
+            if (!string.IsNullOrWhiteSpace(_embeddedWebAssetsPath) &&
+                File.Exists(Path.Combine(_embeddedWebAssetsPath, "Monaco", "min", "vs", "loader.js")))
+            {
+                return _embeddedWebAssetsPath;
+            }
+
+        const string resourcePrefix = "LumiCanvas.WebAssets/";
+        var assembly = typeof(CanvasWindow).Assembly;
+        var resources = assembly.GetManifestResourceNames()
+            .Where(name => name.StartsWith(resourcePrefix, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (resources.Count == 0)
+        {
+            return null;
+        }
+
+        var targetRoot = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "LumiCanvas",
+            "WebAssets");
+
+        if (File.Exists(Path.Combine(targetRoot, "Monaco", "min", "vs", "loader.js")))
+        {
+            _embeddedWebAssetsPath = targetRoot;
+            return targetRoot;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(targetRoot);
+            foreach (var resourceName in resources)
+            {
+                var relative = resourceName[resourcePrefix.Length..].Replace('/', Path.DirectorySeparatorChar);
+                var targetPath = Path.Combine(targetRoot, relative);
+                var targetDirectory = Path.GetDirectoryName(targetPath);
+                if (!string.IsNullOrWhiteSpace(targetDirectory))
+                {
+                    Directory.CreateDirectory(targetDirectory);
+                }
+
+                using var resourceStream = assembly.GetManifestResourceStream(resourceName);
+                if (resourceStream is null)
+                {
+                    continue;
+                }
+
+                if (File.Exists(targetPath))
+                {
+                    continue;
+                }
+
+                using var fileStream = File.Create(targetPath);
+                resourceStream.CopyTo(fileStream);
+            }
+
+            _embeddedWebAssetsPath = targetRoot;
+            return targetRoot;
+        }
+        catch (Exception ex)
+        {
+            App.WriteDiagnostic("CanvasWindow.EnsureEmbeddedWebAssetsExtracted", ex);
+            return null;
+        }
+        }
     }
 
     private void MarkdownWebView_WebMessageReceived(WebView2 sender, CoreWebView2WebMessageReceivedEventArgs args)
@@ -589,6 +825,14 @@ public sealed partial class CanvasWindow
                          fallback.focus();
                        };
 
+                        window.getMarkdownValue = function () {
+                          if (editor) {
+                            return editor.getValue();
+                          }
+
+                          return fallback.value || '';
+                        };
+
                        fallback.addEventListener('input', () => postContent(fallback.value));
 
                        if (typeof require !== 'function' || !monacoVsBase) {
@@ -609,7 +853,7 @@ public sealed partial class CanvasWindow
                              automaticLayout: true,
                              minimap: { enabled: false },
                              wordWrap: 'on',
-                             lineNumbers: 'on',
+                             lineNumbers: 'off',
                              renderLineHighlight: 'line',
                              scrollBeyondLastLine: false,
                              fontSize: 14
@@ -702,5 +946,25 @@ public sealed partial class CanvasWindow
     private static string NormalizeEditorText(string rawText)
     {
         return rawText.Replace("\r\n", "\n").Replace('\r', '\n').TrimEnd('\n');
+    }
+
+    private static Task<CoreWebView2Environment> GetWebView2EnvironmentAsync()
+    {
+        lock (WebView2EnvironmentLock)
+        {
+            _webView2EnvironmentTask ??= CreateWebView2EnvironmentAsync();
+            return _webView2EnvironmentTask;
+        }
+    }
+
+    private static async Task<CoreWebView2Environment> CreateWebView2EnvironmentAsync()
+    {
+        var userDataFolder = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "LumiCanvas",
+            "WebView2");
+
+        Directory.CreateDirectory(userDataFolder);
+        return await CoreWebView2Environment.CreateWithOptionsAsync(null, userDataFolder, null);
     }
 }
