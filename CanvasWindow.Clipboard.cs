@@ -166,7 +166,7 @@ public sealed partial class CanvasWindow
                     continue;
                 }
 
-                AddPastedMediaItem(kind, storedPath, position);
+                await AddPastedMediaItemAsync(kind, storedPath, position);
                 position = new Windows.Foundation.Point(position.X + 28, position.Y + 28);
                 hasChanges = true;
             }
@@ -178,7 +178,7 @@ public sealed partial class CanvasWindow
             var storedPath = await SaveClipboardBitmapAsync(bitmap);
             if (!string.IsNullOrWhiteSpace(storedPath))
             {
-                AddPastedMediaItem(BoardItemKind.Image, storedPath, position);
+                await AddPastedMediaItemAsync(BoardItemKind.Image, storedPath, position);
                 hasChanges = true;
             }
         }
@@ -212,20 +212,22 @@ public sealed partial class CanvasWindow
         return targetPath;
     }
 
-    private void AddPastedMediaItem(BoardItemKind kind, string sourcePath, Windows.Foundation.Point position)
+    private async Task AddPastedMediaItemAsync(BoardItemKind kind, string sourcePath, Windows.Foundation.Point position)
     {
         if (_session.CurrentTask is null)
         {
             return;
         }
 
+        var (itemWidth, itemHeight) = await GetInitialItemSizeAsync(kind, sourcePath);
+
         var item = new BoardItemModel
         {
             Kind = kind,
             X = position.X,
             Y = position.Y,
-            Width = kind == BoardItemKind.Image ? 360 : 420,
-            Height = kind == BoardItemKind.Image ? 240 : 300,
+            Width = itemWidth,
+            Height = itemHeight,
             ZIndex = _highestZIndex + 1,
             SourcePath = sourcePath
         };

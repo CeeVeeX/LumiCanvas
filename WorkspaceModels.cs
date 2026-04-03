@@ -389,7 +389,10 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
 
         var replacement = new TaskBoard(Guid.NewGuid(), task.Title)
         {
-            State = task.State
+            State = task.State,
+            CanvasScale = task.CanvasScale,
+            CanvasOffsetX = task.CanvasOffsetX,
+            CanvasOffsetY = task.CanvasOffsetY
         };
 
         foreach (var item in task.Items)
@@ -461,7 +464,10 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
     {
         var board = new TaskBoard(document.Id, document.Title)
         {
-            State = document.State
+            State = document.State,
+            CanvasScale = document.CanvasScale,
+            CanvasOffsetX = document.CanvasOffsetX,
+            CanvasOffsetY = document.CanvasOffsetY
         };
 
         foreach (var itemDocument in document.Items)
@@ -490,12 +496,73 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
 
     private string? ResolveArchiveSourcePath(Guid taskId, string? sourcePath)
     {
-        if (string.IsNullOrWhiteSpace(sourcePath) || Path.IsPathRooted(sourcePath))
+        if (string.IsNullOrWhiteSpace(sourcePath))
         {
             return sourcePath;
         }
 
-        return Path.Combine(_taskAssetCacheFolder, taskId.ToString("N"), sourcePath.Replace('/', Path.DirectorySeparatorChar));
+        if (Path.IsPathRooted(sourcePath))
+        {
+            if (File.Exists(sourcePath) || Directory.Exists(sourcePath))
+            {
+                return sourcePath;
+            }
+
+            return TryResolveArchivedAssetPath(taskId, sourcePath) ?? sourcePath;
+        }
+
+        var relativePath = Path.Combine(_taskAssetCacheFolder, taskId.ToString("N"), sourcePath.Replace('/', Path.DirectorySeparatorChar));
+        if (File.Exists(relativePath) || Directory.Exists(relativePath))
+        {
+            return relativePath;
+        }
+
+        var fallbackPath = TryResolveArchivedAssetPath(taskId, sourcePath);
+        if (!string.IsNullOrWhiteSpace(fallbackPath))
+        {
+            return fallbackPath;
+        }
+
+        return relativePath;
+    }
+
+    private string? TryResolveArchivedAssetPath(Guid taskId, string sourcePath)
+    {
+        var assetsRoot = Path.Combine(_taskAssetCacheFolder, taskId.ToString("N"), "assets");
+        if (!Directory.Exists(assetsRoot))
+        {
+            return null;
+        }
+
+        var normalizedSourcePath = sourcePath.Replace('/', Path.DirectorySeparatorChar);
+        var assetsMarker = $"{Path.DirectorySeparatorChar}assets{Path.DirectorySeparatorChar}";
+        var markerIndex = normalizedSourcePath.IndexOf(assetsMarker, StringComparison.OrdinalIgnoreCase);
+        if (markerIndex >= 0)
+        {
+            var relativeAssetPath = normalizedSourcePath[(markerIndex + assetsMarker.Length)..].TrimStart(Path.DirectorySeparatorChar);
+            if (!string.IsNullOrWhiteSpace(relativeAssetPath))
+            {
+                var candidatePath = Path.Combine(assetsRoot, relativeAssetPath);
+                if (File.Exists(candidatePath) || Directory.Exists(candidatePath))
+                {
+                    return candidatePath;
+                }
+            }
+        }
+
+        var fileName = Path.GetFileName(normalizedSourcePath);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            return null;
+        }
+
+        var directPath = Path.Combine(assetsRoot, fileName);
+        if (File.Exists(directPath))
+        {
+            return directPath;
+        }
+
+        return null;
     }
 
     private void RegisterTask(TaskBoard task)
@@ -690,6 +757,9 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
             Id = task.Id,
             Title = task.Title,
             State = task.State,
+            CanvasScale = task.CanvasScale,
+            CanvasOffsetX = task.CanvasOffsetX,
+            CanvasOffsetY = task.CanvasOffsetY,
             Items = task.Items.Select(item => new BoardItemDocument
             {
                 Id = item.Id,
@@ -808,13 +878,29 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
             return sourcePath;
         }
 
-        var taskRoot = Path.Combine(_taskAssetCacheFolder, taskId.ToString("N"));
-        if (!Path.IsPathRooted(sourcePath) || !sourcePath.StartsWith(taskRoot, StringComparison.OrdinalIgnoreCase))
+        if (!Path.IsPathRooted(sourcePath))
         {
             return sourcePath;
         }
 
-        return Path.GetRelativePath(taskRoot, sourcePath).Replace(Path.DirectorySeparatorChar, '/');
+        var taskRoot = Path.Combine(_taskAssetCacheFolder, taskId.ToString("N"));
+        try
+        {
+            var normalizedTaskRoot = Path.GetFullPath(taskRoot)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            var normalizedSourcePath = Path.GetFullPath(sourcePath);
+
+            if (!normalizedSourcePath.StartsWith(normalizedTaskRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                return sourcePath;
+            }
+
+            return Path.GetRelativePath(taskRoot, normalizedSourcePath).Replace(Path.DirectorySeparatorChar, '/');
+        }
+        catch
+        {
+            return sourcePath;
+        }
     }
 
     private string ResolveArchivePath(TaskBoard task)
@@ -958,6 +1044,12 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
 
         public TaskBoardState State { get; set; }
 
+        public double CanvasScale { get; set; } = 1;
+
+        public double CanvasOffsetX { get; set; }
+
+        public double CanvasOffsetY { get; set; }
+
         public List<BoardItemDocument> Items { get; set; } = [];
     }
 
@@ -997,6 +1089,9 @@ public sealed class TaskBoard : INotifyPropertyChanged
 {
     private string _title;
     private TaskBoardState _state;
+    private double _canvasScale = 1;
+    private double _canvasOffsetX;
+    private double _canvasOffsetY;
 
     public TaskBoard(string title)
         : this(Guid.NewGuid(), title)
@@ -1045,6 +1140,24 @@ public sealed class TaskBoard : INotifyPropertyChanged
 
     public ObservableCollection<BoardItemModel> Items { get; } = [];
 
+    public double CanvasScale
+    {
+        get => _canvasScale;
+        set => SetProperty(ref _canvasScale, value);
+    }
+
+    public double CanvasOffsetX
+    {
+        get => _canvasOffsetX;
+        set => SetProperty(ref _canvasOffsetX, value);
+    }
+
+    public double CanvasOffsetY
+    {
+        get => _canvasOffsetY;
+        set => SetProperty(ref _canvasOffsetY, value);
+    }
+
     public string DisplayStatus => State switch
     {
         TaskBoardState.Completed => $"已完成 · {Items.Count} 个组件",
@@ -1062,6 +1175,17 @@ public sealed class TaskBoard : INotifyPropertyChanged
     private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+    }
+
+    private void SetProperty<T>(ref T storage, T value, [CallerMemberName] string? propertyName = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(storage, value))
+        {
+            return;
+        }
+
+        storage = value;
+        OnPropertyChanged(propertyName);
     }
 }
 

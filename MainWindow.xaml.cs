@@ -93,7 +93,9 @@ public sealed partial class MainWindow : Window
 
         InitializeComponent();
         RootGrid.DataContext = this;
+        RootGrid.ActualThemeChanged += RootGrid_ActualThemeChanged;
         RootGrid.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler(RootGrid_KeyDown), true);
+        ApplySidebarTheme();
 
         _hwnd = WindowNative.GetWindowHandle(this);
         _canvasWindow = new CanvasWindow(_session);
@@ -308,12 +310,56 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private void RootGrid_ActualThemeChanged(FrameworkElement sender, object args)
+    {
+        ApplySidebarTheme();
+    }
+
+    private bool IsLightThemeActive()
+    {
+        var theme = RootGrid.ActualTheme;
+        if (theme == ElementTheme.Light)
+        {
+            return true;
+        }
+
+        if (theme == ElementTheme.Dark)
+        {
+            return false;
+        }
+
+        return Application.Current.RequestedTheme == ApplicationTheme.Light;
+    }
+
+    private void ApplySidebarTheme()
+    {
+        var isLightTheme = IsLightThemeActive();
+        SidebarPanel.Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(isLightTheme
+            ? ColorHelper.FromArgb(242, 252, 254, 255)
+            : ColorHelper.FromArgb(112, 24, 33, 44));
+
+        SidebarTitleTextBlock.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(isLightTheme
+            ? ColorHelper.FromArgb(255, 35, 52, 74)
+            : Colors.White);
+
+        SidebarDescriptionTextBlock.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(isLightTheme
+            ? ColorHelper.FromArgb(255, 88, 107, 132)
+            : ColorHelper.FromArgb(255, 168, 179, 196));
+
+        if (SidebarStatusTextBlock.Visibility == Visibility.Visible)
+        {
+            var isWarning = SidebarStatusTextBlock.Tag as string == "warning";
+            SidebarStatusTextBlock.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(isWarning
+                ? (isLightTheme ? ColorHelper.FromArgb(255, 176, 106, 24) : ColorHelper.FromArgb(255, 255, 196, 120))
+                : (isLightTheme ? ColorHelper.FromArgb(255, 28, 116, 204) : ColorHelper.FromArgb(255, 140, 196, 255)));
+        }
+    }
+
     private void MainWindow_Closed(object sender, WindowEventArgs args)
     {
         _isExitRequested = true;
         _timeTagReminderTimer.Stop();
         _session.Flush();
-        _session.ClearTaskAssetsCache();
         UnregisterHotKey(_hwnd, HotKeyId);
         RemoveTrayIcon();
         _canvasWindow.Shutdown();
@@ -687,15 +733,22 @@ public sealed partial class MainWindow : Window
     private void SetSidebarStatus(string message, bool isWarning = false)
     {
         SidebarStatusTextBlock.Text = message;
+        SidebarStatusTextBlock.Tag = isWarning ? "warning" : "info";
+        var isLightTheme = IsLightThemeActive();
         SidebarStatusTextBlock.Foreground = isWarning
-            ? new Microsoft.UI.Xaml.Media.SolidColorBrush(ColorHelper.FromArgb(255, 255, 196, 120))
-            : new Microsoft.UI.Xaml.Media.SolidColorBrush(ColorHelper.FromArgb(255, 140, 196, 255));
+            ? new Microsoft.UI.Xaml.Media.SolidColorBrush(isLightTheme
+                ? ColorHelper.FromArgb(255, 176, 106, 24)
+                : ColorHelper.FromArgb(255, 255, 196, 120))
+            : new Microsoft.UI.Xaml.Media.SolidColorBrush(isLightTheme
+                ? ColorHelper.FromArgb(255, 28, 116, 204)
+                : ColorHelper.FromArgb(255, 140, 196, 255));
         SidebarStatusTextBlock.Visibility = Visibility.Visible;
     }
 
     private void ClearSidebarStatus()
     {
         SidebarStatusTextBlock.Text = string.Empty;
+        SidebarStatusTextBlock.Tag = null;
         SidebarStatusTextBlock.Visibility = Visibility.Collapsed;
     }
 
@@ -736,7 +789,6 @@ public sealed partial class MainWindow : Window
         _isExitRequested = true;
         _timeTagReminderTimer.Stop();
         _session.Flush();
-        _session.ClearTaskAssetsCache();
         RemoveTrayIcon();
         _canvasWindow.Shutdown();
         Close();

@@ -38,6 +38,8 @@
                     </Rectangle.Fill>
                 </Rectangle>
 
+                <Image x:Name="GridDotLayer" IsHitTestVisible="False" Stretch="Fill" />
+
                 <Canvas x:Name="BoardCanvas" Background="Transparent" Height="20000" Width="20000">
                     <Canvas.RenderTransform>
                         <CompositeTransform x:Name="BoardTransform" />
@@ -132,6 +134,23 @@
                         Width="204"
                         Height="124"
                         Background="#22131B26" />
+                </Border>
+
+                <Border
+                    Margin="16"
+                    Padding="10,6"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Bottom"
+                    Background="#8A111923"
+                    BorderBrush="#5FAFD1FF"
+                    BorderThickness="1"
+                    CornerRadius="10"
+                    IsHitTestVisible="False">
+                    <TextBlock
+                        x:Name="CanvasMetricsText"
+                        Foreground="#C8D9EA"
+                        FontSize="12"
+                        Text="缩放: 100% | 偏移: (0, 0) | 组件: 0" />
                 </Border>
             </Grid>
         </Border>

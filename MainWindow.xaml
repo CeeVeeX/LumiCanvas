@@ -40,11 +40,13 @@
             <Grid RowDefinitions="Auto,Auto,*" RowSpacing="18">
                 <StackPanel Spacing="8">
                     <TextBlock
+                        x:Name="SidebarTitleTextBlock"
                         FontSize="24"
                         FontWeight="SemiBold"
                         Foreground="White"
                         Text="桌面任务侧边栏" />
                     <TextBlock
+                        x:Name="SidebarDescriptionTextBlock"
                         TextWrapping="WrapWholeWords"
                         Foreground="#A8B3C4"
                         Text="按 Ctrl + Tab 唤醒或收起。点击任务会打开独立画布窗口，不会替换当前侧边栏窗口。" />

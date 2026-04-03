@@ -12,21 +12,38 @@ public sealed partial class CanvasWindow
 {
     private FrameworkElement BuildFileCard(BoardItemModel item)
     {
+        var isDirectory = IsDirectoryItem(item);
+        var displayName = GetItemDisplayName(item);
+        var actionText = isDirectory ? "打开文件夹" : "定位并打开";
+
         var layout = new Border
         {
-            Background = new SolidColorBrush(ColorHelper.FromArgb(200, 14, 20, 28)),
-            Padding = new Thickness(12),
+            Background = new SolidColorBrush(ColorHelper.FromArgb(220, 20, 28, 38)),
+            BorderBrush = new SolidColorBrush(ColorHelper.FromArgb(140, 95, 140, 190)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(14, 12, 14, 12),
             Child = new StackPanel
             {
-                Spacing = 8,
-                VerticalAlignment = VerticalAlignment.Center,
+                Spacing = 10,
                 Children =
                 {
                     new TextBlock
                     {
-                        Foreground = SecondaryTextBrush,
+                        Foreground = ItemTitleBrush,
+                        FontSize = 16,
+                        FontWeight = new Windows.UI.Text.FontWeight { Weight = 600 },
                         TextWrapping = TextWrapping.WrapWholeWords,
-                        Text = IsDirectoryItem(item) ? "点击名称打开该文件夹" : "点击名称打开所在文件夹并选中该文件"
+                        MaxLines = 2,
+                        Text = displayName
+                    },
+                    new TextBlock
+                    {
+                        Foreground = SecondaryTextBrush,
+                        FontSize = 12,
+                        TextWrapping = TextWrapping.WrapWholeWords,
+                        MaxLines = 2,
+                        Text = item.SourcePath ?? string.Empty
                     }
                 }
             }
@@ -41,14 +58,10 @@ public sealed partial class CanvasWindow
         {
             Tag = item,
             HorizontalAlignment = HorizontalAlignment.Left,
-            Padding = new Thickness(0),
-            Background = new SolidColorBrush(Colors.Transparent),
-            BorderThickness = new Thickness(0),
+            Padding = new Thickness(12, 6, 12, 6),
             Content = new TextBlock
             {
-                Foreground = AccentBrush,
-                TextWrapping = TextWrapping.WrapWholeWords,
-                Text = GetItemDisplayName(item)
+                Text = actionText
             }
         };
         openButton.Click += FileItemOpenButton_Click;

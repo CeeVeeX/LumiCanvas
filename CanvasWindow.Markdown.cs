@@ -485,7 +485,7 @@ public sealed partial class CanvasWindow
             ? null
             : monacoLoaderUrl.Replace("/loader.js", string.Empty, StringComparison.Ordinal);
         editor.NavigationCompleted += OnNavigationCompleted;
-        editor.NavigateToString(BuildMonacoEditorHtml(monacoLoaderUrl, monacoVsBaseUrl));
+        editor.NavigateToString(BuildMonacoEditorHtml(monacoLoaderUrl, monacoVsBaseUrl, IsLightThemeActive()));
     }
 
     private string? ConfigureMonacoLocalAssets(WebView2 editor)
@@ -520,12 +520,15 @@ public sealed partial class CanvasWindow
         item.Content = NormalizeEditorText(args.TryGetWebMessageAsString());
     }
 
-    private static string BuildMonacoEditorHtml(string? monacoLoaderUrl, string? monacoVsBaseUrl)
+    private static string BuildMonacoEditorHtml(string? monacoLoaderUrl, string? monacoVsBaseUrl, bool isLightTheme)
     {
         var loaderScriptTag = string.IsNullOrWhiteSpace(monacoLoaderUrl)
             ? string.Empty
             : $"<script src=\"{monacoLoaderUrl}\"></script>";
         var monacoVsBaseUrlJson = JsonSerializer.Serialize(monacoVsBaseUrl ?? string.Empty);
+        var fallbackBackground = isLightTheme ? "#f8fbff" : "transparent";
+        var fallbackColor = isLightTheme ? "#2f3d4f" : "#d6e0ec";
+        var monacoTheme = isLightTheme ? "vs" : "vs-dark";
 
         var html = """
                    <!doctype html>
@@ -548,7 +551,7 @@ public sealed partial class CanvasWindow
                          resize: none;
                          box-sizing: border-box;
                          padding: 10px;
-                         background: transparent;
+                          background: __FALLBACK_BG__;
                          color: #d6e0ec;
                          font: 14px Consolas, "Microsoft YaHei UI", sans-serif;
                        }
@@ -602,7 +605,7 @@ public sealed partial class CanvasWindow
                            editor = monaco.editor.create(document.getElementById('container'), {
                              value: fallback.value,
                              language: 'markdown',
-                             theme: 'vs-dark',
+                              theme: '__MONACO_THEME__',
                              automaticLayout: true,
                              minimap: { enabled: false },
                              wordWrap: 'on',
@@ -622,7 +625,10 @@ public sealed partial class CanvasWindow
 
         return html
             .Replace("__LOADER_SCRIPT__", loaderScriptTag, StringComparison.Ordinal)
-            .Replace("__MONACO_VS_BASE_JSON__", monacoVsBaseUrlJson, StringComparison.Ordinal);
+            .Replace("__MONACO_VS_BASE_JSON__", monacoVsBaseUrlJson, StringComparison.Ordinal)
+            .Replace("__MONACO_THEME__", monacoTheme, StringComparison.Ordinal)
+            .Replace("#d6e0ec", fallbackColor, StringComparison.Ordinal)
+            .Replace("__FALLBACK_BG__", fallbackBackground, StringComparison.Ordinal);
     }
 
     private void MarkdownEditor_TextChanged(object sender, RoutedEventArgs e)

@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.WindowsRuntime;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -23,7 +24,9 @@ using DocText = Microsoft.UI.Text;
 using FontText = Windows.UI.Text;
 using Windows.Foundation;
 using Windows.Graphics;
+using Windows.Graphics.Imaging;
 using Windows.Media.Core;
+using Windows.Storage;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
 
@@ -71,6 +74,7 @@ public sealed partial class CanvasWindow : Window
     private static readonly SolidColorBrush ItemTextBrush = new(ColorHelper.FromArgb(255, 214, 224, 236));
     private static readonly SolidColorBrush SecondaryTextBrush = new(ColorHelper.FromArgb(255, 152, 168, 186));
     private static readonly SolidColorBrush AccentBrush = new(ColorHelper.FromArgb(255, 104, 180, 255));
+    private static readonly SolidColorBrush GridDotBrush = new(ColorHelper.FromArgb(92, 165, 188, 214));
     private readonly DispatcherQueue _dispatcherQueue;
     private readonly DispatcherQueueTimer _markdownHighlightTimer;
     private readonly WorkspaceSession _session;
@@ -105,6 +109,10 @@ public sealed partial class CanvasWindow : Window
     private int _highestZIndex;
     private double _resizeStartWidth;
     private double _resizeStartHeight;
+    private WriteableBitmap? _gridBitmap;
+    private byte[] _gridPixels = [];
+    private int _gridBitmapWidth;
+    private int _gridBitmapHeight;
     private List<BoardItemModel> _activeDraggedItems = [];
     private List<ClipboardBoardItemPayload> _copiedBoardItems = [];
 
@@ -119,9 +127,11 @@ public sealed partial class CanvasWindow : Window
 
         InitializeComponent();
         _hwnd = WindowNative.GetWindowHandle(this);
+        RootGrid.ActualThemeChanged += RootGrid_ActualThemeChanged;
         RootGrid.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler(RootGrid_KeyDown), true);
         InitializeClipboardIntegration();
         CanvasViewport.SizeChanged += CanvasViewport_SizeChanged;
+        ApplyThemeStyles();
 
         ConfigureWindow();
         UpdateCommandState();
@@ -130,13 +140,60 @@ public sealed partial class CanvasWindow : Window
         Activated += CanvasWindow_Activated;
     }
 
+    private void RootGrid_ActualThemeChanged(FrameworkElement sender, object args)
+    {
+        ApplyThemeStyles();
+        UpdateGridDots();
+    }
+
+    private bool IsLightThemeActive()
+    {
+        var theme = RootGrid.ActualTheme;
+        if (theme == ElementTheme.Light)
+        {
+            return true;
+        }
+
+        if (theme == ElementTheme.Dark)
+        {
+            return false;
+        }
+
+        return Application.Current.RequestedTheme == ApplicationTheme.Light;
+    }
+
+    private void ApplyThemeStyles()
+    {
+        if (IsLightThemeActive())
+        {
+            ItemBackgroundBrush.Color = ColorHelper.FromArgb(255, 244, 248, 255);
+            ItemBorderBrush.Color = ColorHelper.FromArgb(255, 192, 206, 226);
+            ItemTitleBrush.Color = ColorHelper.FromArgb(255, 38, 56, 78);
+            ItemTextBrush.Color = ColorHelper.FromArgb(255, 46, 62, 82);
+            SecondaryTextBrush.Color = ColorHelper.FromArgb(255, 102, 122, 146);
+            AccentBrush.Color = ColorHelper.FromArgb(255, 45, 126, 216);
+            return;
+        }
+
+        ItemBackgroundBrush.Color = ColorHelper.FromArgb(255, 26, 32, 41);
+        ItemBorderBrush.Color = ColorHelper.FromArgb(255, 52, 66, 85);
+        ItemTitleBrush.Color = Colors.White;
+        ItemTextBrush.Color = ColorHelper.FromArgb(255, 214, 224, 236);
+        SecondaryTextBrush.Color = ColorHelper.FromArgb(255, 152, 168, 186);
+        AccentBrush.Color = ColorHelper.FromArgb(255, 104, 180, 255);
+    }
+
     public event EventHandler? SidebarRequested;
 
     public void ShowTask(TaskBoard task)
     {
         _session.CurrentTask = task;
+        _scale = double.IsFinite(task.CanvasScale) ? Math.Clamp(task.CanvasScale, 0.25, 4.5) : 1;
+        _offsetX = double.IsFinite(task.CanvasOffsetX) ? task.CanvasOffsetX : 0;
+        _offsetY = double.IsFinite(task.CanvasOffsetY) ? task.CanvasOffsetY : 0;
         CurrentTaskTitleText.Text = task.Title;
         UpdateCommandState();
+        UpdateCanvasTransform();
         RenderCurrentBoard();
         PositionCanvasWindowToCursorDisplay();
         ShowWindow(_hwnd, SwRestore);
@@ -337,6 +394,13 @@ public sealed partial class CanvasWindow : Window
     {
         EmptyBoardHintCard.Visibility = _session.CurrentTask is null ? Visibility.Visible : Visibility.Collapsed;
         CurrentTaskTitleText.Text = _session.CurrentTask?.Title ?? "未选择任务";
+        UpdateCanvasMetrics();
+    }
+
+    private void UpdateCanvasMetrics()
+    {
+        var itemCount = _session.CurrentTask?.Items.Count ?? 0;
+        CanvasMetricsText.Text = $"缩放: {_scale * 100:0.#}% | 偏移: ({_offsetX:0.#}, {_offsetY:0.#}) | 组件: {itemCount}";
     }
 
     private async void AddFileMenuItem_Click(object sender, RoutedEventArgs e)
@@ -365,26 +429,87 @@ public sealed partial class CanvasWindow : Window
         InitializeWithWindow.Initialize(picker, _hwnd);
         picker.FileTypeFilter.Add("*");
 
-        var file = await picker.PickSingleFileAsync();
-        if (file is null || string.IsNullOrWhiteSpace(file.Path))
+        var files = await picker.PickMultipleFilesAsync();
+        if (files is null || files.Count == 0)
         {
             return;
         }
 
-        var kind = ResolveFileKind(file.Path);
-
-        _session.CurrentTask.Items.Add(new BoardItemModel
+        var currentPosition = position;
+        _session.BeginDeferredSave();
+        try
         {
-            Kind = kind,
-            X = position.X,
-            Y = position.Y,
-            Width = kind == BoardItemKind.Image ? 360 : kind == BoardItemKind.Video ? 420 : 320,
-            Height = kind == BoardItemKind.Image ? 240 : kind == BoardItemKind.Video ? 300 : 140,
-            ZIndex = _highestZIndex + 1,
-            SourcePath = file.Path
-        });
+            foreach (var file in files)
+            {
+                if (string.IsNullOrWhiteSpace(file.Path))
+                {
+                    continue;
+                }
 
-        RenderCurrentBoard();
+                var kind = ResolveFileKind(file.Path);
+                var (itemWidth, itemHeight) = await GetInitialItemSizeAsync(kind, file.Path);
+                var item = new BoardItemModel
+                {
+                    Kind = kind,
+                    X = currentPosition.X,
+                    Y = currentPosition.Y,
+                    Width = itemWidth,
+                    Height = itemHeight,
+                    ZIndex = _highestZIndex + 1,
+                    SourcePath = file.Path
+                };
+
+                _session.CurrentTask.Items.Add(item);
+                AddBoardItemView(item);
+                currentPosition = new Point(currentPosition.X + 24, currentPosition.Y + 24);
+            }
+        }
+        finally
+        {
+            _session.EndDeferredSave();
+        }
+    }
+
+    private async Task<(double Width, double Height)> GetInitialItemSizeAsync(BoardItemKind kind, string? sourcePath)
+    {
+        if (kind == BoardItemKind.Image)
+        {
+            var imageSize = await TryGetImageSizeAsync(sourcePath);
+            if (imageSize.HasValue)
+            {
+                return imageSize.Value;
+            }
+
+            return (360, 240);
+        }
+
+        return kind == BoardItemKind.Video ? (420, 300) : (320, 140);
+    }
+
+    private static async Task<(double Width, double Height)?> TryGetImageSizeAsync(string? sourcePath)
+    {
+        if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
+        {
+            return null;
+        }
+
+        try
+        {
+            var storageFile = await StorageFile.GetFileFromPathAsync(sourcePath);
+            await using var stream = await storageFile.OpenStreamForReadAsync();
+            using var randomAccessStream = stream.AsRandomAccessStream();
+            var decoder = await BitmapDecoder.CreateAsync(randomAccessStream);
+            if (decoder.PixelWidth == 0 || decoder.PixelHeight == 0)
+            {
+                return null;
+            }
+
+            return (decoder.PixelWidth, decoder.PixelHeight);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private void AddTimeTagAt(Point position)
@@ -429,7 +554,7 @@ public sealed partial class CanvasWindow : Window
             return;
         }
 
-        _session.CurrentTask.Items.Add(new BoardItemModel
+        var item = new BoardItemModel
         {
             Kind = BoardItemKind.File,
             X = position.X,
@@ -438,9 +563,10 @@ public sealed partial class CanvasWindow : Window
             Height = 140,
             ZIndex = _highestZIndex + 1,
             SourcePath = folder.Path
-        });
+        };
 
-        RenderCurrentBoard();
+        _session.CurrentTask.Items.Add(item);
+        AddBoardItemView(item);
     }
 
     private void CanvasViewport_PointerPressed(object sender, PointerRoutedEventArgs e)
@@ -543,8 +669,9 @@ public sealed partial class CanvasWindow : Window
             return;
         }
 
-        _session.CurrentTask.Items.Add(CreateMarkdownItem(ScreenToWorld(e.GetPosition(CanvasViewport))));
-        RenderCurrentBoard();
+        var item = CreateMarkdownItem(ScreenToWorld(e.GetPosition(CanvasViewport)));
+        _session.CurrentTask.Items.Add(item);
+        AddBoardItemView(item);
         e.Handled = true;
     }
 
@@ -628,12 +755,154 @@ public sealed partial class CanvasWindow : Window
         BoardTransform.ScaleY = _scale;
         BoardTransform.TranslateX = _offsetX;
         BoardTransform.TranslateY = _offsetY;
+
+        if (_session.CurrentTask is not null)
+        {
+            _session.CurrentTask.CanvasScale = _scale;
+            _session.CurrentTask.CanvasOffsetX = _offsetX;
+            _session.CurrentTask.CanvasOffsetY = _offsetY;
+        }
+
+        UpdateGridDots();
+        UpdateCanvasMetrics();
         UpdateMiniMap();
     }
 
     private void CanvasViewport_SizeChanged(object sender, SizeChangedEventArgs e)
     {
+        UpdateGridDots();
         UpdateMiniMap();
+    }
+
+    private void UpdateGridDots()
+    {
+        if (GridDotLayer is null)
+        {
+            return;
+        }
+
+        var viewportWidth = CanvasViewport.ActualWidth;
+        var viewportHeight = CanvasViewport.ActualHeight;
+        if (viewportWidth <= 0 || viewportHeight <= 0 || _scale <= 0)
+        {
+            GridDotLayer.Source = null;
+            return;
+        }
+
+        const double renderScale = 0.5;
+        var bitmapWidth = Math.Max(1, (int)Math.Ceiling(viewportWidth * renderScale));
+        var bitmapHeight = Math.Max(1, (int)Math.Ceiling(viewportHeight * renderScale));
+        EnsureGridBitmap(bitmapWidth, bitmapHeight);
+
+        const double preferredScreenSpacing = 26;
+        const double baseWorldSpacing = 24;
+        var targetWorldSpacing = preferredScreenSpacing / _scale;
+        var scaleFactor = Math.Max(1.0 / 8.0, targetWorldSpacing / baseWorldSpacing);
+        var quantizedScale = Math.Pow(2, Math.Round(Math.Log(scaleFactor, 2)));
+        var worldSpacing = baseWorldSpacing * quantizedScale;
+        var screenSpacing = worldSpacing * _scale;
+        if (screenSpacing < 14)
+        {
+            worldSpacing *= 2;
+        }
+        else if (screenSpacing > 42)
+        {
+            worldSpacing /= 2;
+        }
+
+        var maxDots = 2400;
+        while ((viewportWidth / Math.Max(1, screenSpacing)) * (viewportHeight / Math.Max(1, screenSpacing)) > maxDots)
+        {
+            worldSpacing *= 2;
+            screenSpacing = worldSpacing * _scale;
+        }
+
+        var dotSize = Math.Clamp(screenSpacing / 22, 1.0, 2.2) * renderScale;
+        var spacingPixels = Math.Max(1.0, screenSpacing * renderScale);
+        var phaseX = PositiveModulo(_offsetX * renderScale, spacingPixels);
+        var phaseY = PositiveModulo(_offsetY * renderScale, spacingPixels);
+        var radius = Math.Max(0.55, dotSize / 2);
+
+        Array.Clear(_gridPixels, 0, _gridPixels.Length);
+
+        var isLightTheme = IsLightThemeActive();
+        var alpha = isLightTheme ? (byte)34 : (byte)56;
+        var baseRed = isLightTheme ? (byte)112 : (byte)165;
+        var baseGreen = isLightTheme ? (byte)132 : (byte)188;
+        var baseBlue = isLightTheme ? (byte)158 : (byte)214;
+        var red = (byte)(baseRed * alpha / 255);
+        var green = (byte)(baseGreen * alpha / 255);
+        var blue = (byte)(baseBlue * alpha / 255);
+
+        for (var y = phaseY - spacingPixels; y <= bitmapHeight + spacingPixels; y += spacingPixels)
+        {
+            var py = (int)Math.Round(y);
+            for (var x = phaseX - spacingPixels; x <= bitmapWidth + spacingPixels; x += spacingPixels)
+            {
+                var px = (int)Math.Round(x);
+                DrawGridDot(px, py, radius, bitmapWidth, bitmapHeight, blue, green, red, alpha);
+            }
+        }
+
+        using var bufferStream = _gridBitmap!.PixelBuffer.AsStream();
+        bufferStream.Position = 0;
+        bufferStream.Write(_gridPixels, 0, _gridPixels.Length);
+        _gridBitmap.Invalidate();
+        GridDotLayer.Source = _gridBitmap;
+    }
+
+    private void EnsureGridBitmap(int width, int height)
+    {
+        if (_gridBitmap is not null && _gridBitmapWidth == width && _gridBitmapHeight == height)
+        {
+            return;
+        }
+
+        _gridBitmapWidth = width;
+        _gridBitmapHeight = height;
+        _gridBitmap = new WriteableBitmap(width, height);
+        _gridPixels = new byte[width * height * 4];
+    }
+
+    private void DrawGridDot(int centerX, int centerY, double radius, int width, int height, byte blue, byte green, byte red, byte alpha)
+    {
+        var radiusInt = (int)Math.Ceiling(radius);
+        var minX = Math.Max(0, centerX - radiusInt);
+        var maxX = Math.Min(width - 1, centerX + radiusInt);
+        var minY = Math.Max(0, centerY - radiusInt);
+        var maxY = Math.Min(height - 1, centerY + radiusInt);
+        var radiusSquared = radius * radius;
+
+        for (var y = minY; y <= maxY; y++)
+        {
+            var rowOffset = y * width * 4;
+            for (var x = minX; x <= maxX; x++)
+            {
+                var dx = x - centerX;
+                var dy = y - centerY;
+                if (dx * dx + dy * dy > radiusSquared)
+                {
+                    continue;
+                }
+
+                var index = rowOffset + x * 4;
+                _gridPixels[index] = blue;
+                _gridPixels[index + 1] = green;
+                _gridPixels[index + 2] = red;
+                _gridPixels[index + 3] = alpha;
+            }
+        }
+    }
+
+    private static double PositiveModulo(double value, double divisor)
+    {
+        if (divisor == 0)
+        {
+            return 0;
+        }
+
+        var result = value % divisor;
+        return result < 0 ? result + divisor : result;
     }
 
     private void UpdateMiniMap()
@@ -766,7 +1035,27 @@ public sealed partial class CanvasWindow : Window
             return;
         }
 
-        if (_selectedItemIds.Contains(item.Id))
+        if (IsControlPressed())
+        {
+            if (_selectedItemIds.Contains(item.Id))
+            {
+                _selectedItemIds.Remove(item.Id);
+                if (_itemViews.TryGetValue(item.Id, out var selectedView))
+                {
+                    SetSelectionOutlineVisibility(selectedView, false);
+                    SetResizeHandleVisibility(selectedView, false);
+                }
+            }
+            else
+            {
+                _selectedItemIds.Add(item.Id);
+                EnsureSelectionOutlineVisible(item.Id);
+            }
+
+            e.Handled = true;
+            return;
+        }
+        else if (_selectedItemIds.Contains(item.Id))
         {
             EnsureSelectionOutlineVisible(item.Id);
         }
@@ -944,8 +1233,28 @@ public sealed partial class CanvasWindow : Window
         var deltaY = (currentPosition.Y - _resizeStartPointerPosition.Y) / _scale;
         var (minimumWidth, minimumHeight) = GetMinimumSize(_resizedItem.Kind);
 
-        _resizedItem.Width = Math.Max(minimumWidth, _resizeStartWidth + deltaX);
-        _resizedItem.Height = Math.Max(minimumHeight, _resizeStartHeight + deltaY);
+        if (_resizedItem.Kind == BoardItemKind.Image && _resizeStartWidth > 0 && _resizeStartHeight > 0)
+        {
+            var rawScaleX = (_resizeStartWidth + deltaX) / _resizeStartWidth;
+            var rawScaleY = (_resizeStartHeight + deltaY) / _resizeStartHeight;
+            var resizeScale = Math.Abs(rawScaleX - 1) >= Math.Abs(rawScaleY - 1) ? rawScaleX : rawScaleY;
+            if (!double.IsFinite(resizeScale))
+            {
+                resizeScale = 1;
+            }
+
+            var minimumScale = Math.Max(minimumWidth / _resizeStartWidth, minimumHeight / _resizeStartHeight);
+            resizeScale = Math.Max(minimumScale, resizeScale);
+
+            _resizedItem.Width = _resizeStartWidth * resizeScale;
+            _resizedItem.Height = _resizeStartHeight * resizeScale;
+        }
+        else
+        {
+            _resizedItem.Width = Math.Max(minimumWidth, _resizeStartWidth + deltaX);
+            _resizedItem.Height = Math.Max(minimumHeight, _resizeStartHeight + deltaY);
+        }
+
         _resizeItemElement.Width = _resizedItem.Width;
         _resizeItemElement.Height = _resizedItem.Height;
         UpdateMiniMap();
