@@ -11,7 +11,11 @@
         <DesktopAcrylicBackdrop />
     </Window.SystemBackdrop>
 
-    <Grid x:Name="RootGrid" Background="Transparent">
+    <Grid x:Name="RootGrid" Background="Transparent" IsTabStop="True" KeyboardAcceleratorPlacementMode="Hidden">
+        <Grid.KeyboardAccelerators>
+            <KeyboardAccelerator Key="Delete" Invoked="DeleteKeyboardAccelerator_Invoked" />
+            <KeyboardAccelerator Key="Back" Invoked="DeleteKeyboardAccelerator_Invoked" />
+        </Grid.KeyboardAccelerators>
         <Border
             x:Name="CanvasViewport"
             Margin="0"

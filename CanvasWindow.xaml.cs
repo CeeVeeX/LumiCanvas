@@ -44,6 +44,8 @@ public sealed partial class CanvasWindow : Window
     private const double MinimumFileHeight = 100;
     private const double MinimumTimeTagWidth = 240;
     private const double MinimumTimeTagHeight = 180;
+    private const double MinimumWebViewWidth = 360;
+    private const double MinimumWebViewHeight = 220;
     private const double MiniMapPaddingWorld = 120;
     private const double MiniMapCanvasPadding = 4;
     private const int GwlStyle = -16;
@@ -359,11 +361,22 @@ public sealed partial class CanvasWindow : Window
             }
         }
 
-        if (e.Key == Windows.System.VirtualKey.Back)
+        if (e.Key == Windows.System.VirtualKey.Back || e.Key == Windows.System.VirtualKey.Delete)
         {
             DeleteSelectedItems();
             e.Handled = true;
         }
+    }
+
+    private void DeleteKeyboardAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        if (IsTextInputFocused())
+        {
+            return;
+        }
+
+        DeleteSelectedItems();
+        args.Handled = true;
     }
 
     private void DeleteSelectedItems()
@@ -463,6 +476,11 @@ public sealed partial class CanvasWindow : Window
     private void AddTimeTagMenuItem_Click(object sender, RoutedEventArgs e)
     {
         AddTimeTagAt(_contextMenuWorldPoint == default ? GetViewportCenterWorldPoint() : _contextMenuWorldPoint);
+    }
+
+    private void AddWebViewMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        AddWebViewAt(_contextMenuWorldPoint == default ? GetViewportCenterWorldPoint() : _contextMenuWorldPoint);
     }
 
     private async Task AddFileAtAsync(Point position)
@@ -584,6 +602,28 @@ public sealed partial class CanvasWindow : Window
         RenderCurrentBoard();
     }
 
+    private void AddWebViewAt(Point position)
+    {
+        if (_session.CurrentTask is null)
+        {
+            return;
+        }
+
+        var item = new BoardItemModel
+        {
+            Kind = BoardItemKind.WebView,
+            X = position.X,
+            Y = position.Y,
+            Width = 900,
+            Height = 560,
+            ZIndex = _highestZIndex + 1,
+            Content = "https://www.bing.com"
+        };
+
+        _session.CurrentTask.Items.Add(item);
+        AddBoardItemView(item);
+    }
+
     private async Task AddFolderAtAsync(Point position)
     {
         if (_session.CurrentTask is null)
@@ -628,6 +668,11 @@ public sealed partial class CanvasWindow : Window
         {
             e.Handled = true;
             return;
+        }
+
+        if (clickedItem is null)
+        {
+            ClearLingeringInputFocus();
         }
 
         if (clickedItem is not null)
@@ -743,6 +788,10 @@ public sealed partial class CanvasWindow : Window
         var addTimeTagItem = new MenuFlyoutItem { Text = "添加时间标签" };
         addTimeTagItem.Click += AddTimeTagMenuItem_Click;
         flyout.Items.Add(addTimeTagItem);
+
+        var addWebViewItem = new MenuFlyoutItem { Text = "添加网页" };
+        addWebViewItem.Click += AddWebViewMenuItem_Click;
+        flyout.Items.Add(addWebViewItem);
 
         flyout.ShowAt(CanvasViewport, e.GetPosition(CanvasViewport));
         e.Handled = true;
@@ -1068,11 +1117,119 @@ public sealed partial class CanvasWindow : Window
 
         if (item.Kind == BoardItemKind.Markdown)
         {
+            var previouslyEditing = _session.CurrentTask?.Items
+                .FirstOrDefault(candidate => candidate.Kind == BoardItemKind.Markdown && candidate.IsEditing && candidate.Id != item.Id);
+
             SetEditingItem(item);
             item.IsEditing = true;
-            RenderCurrentBoard();
+            if (previouslyEditing is not null)
+            {
+                RefreshBoardItemView(previouslyEditing);
+            }
+
+            RefreshBoardItemView(item);
             e.Handled = true;
         }
+    }
+
+    private void BoardItem_RightTapped(object sender, RightTappedRoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement element || element.Tag is not BoardItemModel item)
+        {
+            return;
+        }
+
+        if (!_selectedItemIds.Contains(item.Id))
+        {
+            SetSelectedItems([item]);
+        }
+
+        var targetItems = GetLockMenuTargetItems(item);
+        if (targetItems.Count == 0)
+        {
+            return;
+        }
+
+        var allLocked = targetItems.All(candidate => candidate.IsLocked);
+        var lockMenuItem = new MenuFlyoutItem
+        {
+            Text = allLocked
+                ? (targetItems.Count > 1 ? "解锁选中项" : "解锁组件")
+                : (targetItems.Count > 1 ? "锁定选中项" : "锁定组件"),
+            Tag = (item, !allLocked)
+        };
+        lockMenuItem.Click += LockMenuItem_Click;
+
+        var flyout = new MenuFlyout();
+        flyout.Items.Add(lockMenuItem);
+        flyout.ShowAt(element, e.GetPosition(element));
+        e.Handled = true;
+    }
+
+    private void LockMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuFlyoutItem { Tag: ValueTuple<BoardItemModel, bool> payload })
+        {
+            return;
+        }
+
+        ApplyLockState(payload.Item1, payload.Item2);
+    }
+
+    private void ApplyLockState(BoardItemModel anchorItem, bool isLocked)
+    {
+        if (_session.CurrentTask is null)
+        {
+            return;
+        }
+
+        var targets = GetLockMenuTargetItems(anchorItem);
+        if (targets.Count == 0)
+        {
+            return;
+        }
+
+        _session.BeginDeferredSave();
+        try
+        {
+            foreach (var candidate in targets)
+            {
+                candidate.IsLocked = isLocked;
+            }
+        }
+        finally
+        {
+            _session.EndDeferredSave();
+        }
+
+        foreach (var candidate in targets)
+        {
+            if (_itemViews.TryGetValue(candidate.Id, out var view))
+            {
+                SetResizeHandleVisibility(view, _selectedItemIds.Contains(candidate.Id));
+            }
+        }
+    }
+
+    private List<BoardItemModel> GetLockMenuTargetItems(BoardItemModel anchorItem)
+    {
+        if (_session.CurrentTask is null)
+        {
+            return [];
+        }
+
+        if (_selectedItemIds.Contains(anchorItem.Id))
+        {
+            var selected = _session.CurrentTask.Items
+                .Where(candidate => _selectedItemIds.Contains(candidate.Id))
+                .ToList();
+            if (selected.Count > 0)
+            {
+                return selected;
+            }
+        }
+
+        return [anchorItem];
     }
 
     private void BoardItem_PointerPressed(object sender, PointerRoutedEventArgs e)
@@ -1081,6 +1238,8 @@ public sealed partial class CanvasWindow : Window
         {
             return;
         }
+
+        ClearLingeringInputFocus();
 
         if (IsControlPressed())
         {
@@ -1114,6 +1273,20 @@ public sealed partial class CanvasWindow : Window
         var pointerPoint = e.GetCurrentPoint(CanvasViewport);
         if (!pointerPoint.Properties.IsLeftButtonPressed || IsInteractiveElement(e.OriginalSource as DependencyObject))
         {
+            return;
+        }
+
+        if (item.IsLocked)
+        {
+            _isPanning = true;
+            _isDraggingItem = false;
+            _draggedItem = null;
+            _activeDraggedItems.Clear();
+            _pressedItem = item;
+            _pressedItemElement = element;
+            _lastPointerPosition = pointerPoint.Position;
+            element.CapturePointer(e.Pointer);
+            e.Handled = true;
             return;
         }
 
@@ -1166,6 +1339,16 @@ public sealed partial class CanvasWindow : Window
         }
 
         var currentPosition = e.GetCurrentPoint(CanvasViewport).Position;
+
+        if (_isPanning && _pressedItem is not null && _pressedItem.IsLocked && ReferenceEquals(_pressedItemElement, element))
+        {
+            _offsetX += currentPosition.X - _lastPointerPosition.X;
+            _offsetY += currentPosition.Y - _lastPointerPosition.Y;
+            _lastPointerPosition = currentPosition;
+            UpdateCanvasTransform();
+            e.Handled = true;
+            return;
+        }
 
         if (!_isDraggingItem && _pressedItem is not null && ReferenceEquals(_pressedItemElement, element))
         {
@@ -1223,6 +1406,7 @@ public sealed partial class CanvasWindow : Window
         _activeDraggedItems.Clear();
         _pressedItem = null;
         _pressedItemElement = null;
+        _isPanning = false;
         if (_isDragDeferredSaveActive)
         {
             _session.EndDeferredSave();
@@ -1239,6 +1423,12 @@ public sealed partial class CanvasWindow : Window
     {
         if (sender is not FrameworkElement handle || handle.DataContext is not BoardItemModel item)
         {
+            return;
+        }
+
+        if (item.IsLocked)
+        {
+            e.Handled = true;
             return;
         }
 
@@ -1537,6 +1727,22 @@ public sealed partial class CanvasWindow : Window
         return false;
     }
 
+    private void ClearLingeringInputFocus()
+    {
+        RootGrid.Focus(FocusState.Programmatic);
+
+        foreach (var view in _itemViews.Values)
+        {
+            var webView = FindDescendant<WebView2>(view);
+            if (webView is null)
+            {
+                continue;
+            }
+
+            _ = webView.ExecuteScriptAsync("if (document.activeElement && document.activeElement.blur) { document.activeElement.blur(); }");
+        }
+    }
+
     private async Task<bool> ExitEditingIfNeededAsync(BoardItemModel? clickedItem)
     {
         if (_session.CurrentTask is null)
@@ -1560,7 +1766,7 @@ public sealed partial class CanvasWindow : Window
         _markdownHighlightTimer.Stop();
         _pendingHighlightEditor = null;
         _pendingFocusItemId = null;
-        RenderCurrentBoard();
+        RefreshBoardItemView(editingItem);
         return true;
     }
 
@@ -1639,6 +1845,7 @@ public sealed partial class CanvasWindow : Window
             BoardItemKind.Markdown => (MinimumMarkdownWidth, MinimumMarkdownHeight),
             BoardItemKind.Image or BoardItemKind.Video => (MinimumMediaWidth, MinimumMediaHeight),
             BoardItemKind.TimeTag => (MinimumTimeTagWidth, MinimumTimeTagHeight),
+            BoardItemKind.WebView => (MinimumWebViewWidth, MinimumWebViewHeight),
             _ => (MinimumFileWidth, MinimumFileHeight)
         };
     }

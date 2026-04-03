@@ -1207,7 +1207,7 @@ public sealed partial class CanvasWindow
             _markdownHighlightTimer.Stop();
             _pendingHighlightEditor = null;
             item.IsEditing = false;
-            RenderCurrentBoard();
+            RefreshBoardItemView(item);
         }
     }
 

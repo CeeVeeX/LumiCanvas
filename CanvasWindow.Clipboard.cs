@@ -22,6 +22,7 @@ public sealed partial class CanvasWindow
         public int ZIndex { get; set; }
         public string? Content { get; set; }
         public string? SourcePath { get; set; }
+        public bool IsLocked { get; set; }
         public DateTimeOffset? TimeTagDueAt { get; set; }
         public bool TimeTagReminderEnabled { get; set; }
         public TimeTagRecurrence TimeTagRecurrence { get; set; }
@@ -71,6 +72,7 @@ public sealed partial class CanvasWindow
             ZIndex = item.ZIndex,
             Content = item.Content,
             SourcePath = item.SourcePath,
+            IsLocked = item.IsLocked,
             TimeTagDueAt = item.TimeTagDueAt,
             TimeTagReminderEnabled = item.TimeTagReminderEnabled,
             TimeTagRecurrence = item.TimeTagRecurrence,
@@ -107,6 +109,7 @@ public sealed partial class CanvasWindow
                     ZIndex = _highestZIndex + 1,
                     Content = item.Content,
                     SourcePath = await CloneSourcePathForPasteAsync(item.SourcePath),
+                    IsLocked = item.IsLocked,
                     TimeTagDueAt = item.TimeTagDueAt,
                     TimeTagReminderEnabled = item.TimeTagReminderEnabled,
                     TimeTagRecurrence = item.TimeTagRecurrence,
@@ -229,7 +232,8 @@ public sealed partial class CanvasWindow
             Width = itemWidth,
             Height = itemHeight,
             ZIndex = _highestZIndex + 1,
-            SourcePath = sourcePath
+            SourcePath = sourcePath,
+            IsLocked = false
         };
 
         _session.CurrentTask.Items.Add(item);

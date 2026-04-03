@@ -26,7 +26,8 @@ public enum BoardItemKind
     Image,
     Video,
     File,
-    TimeTag
+    TimeTag,
+    WebView
 }
 
 [Flags]
@@ -450,6 +451,7 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
                 ZIndex = item.ZIndex,
                 Content = item.Content,
                 SourcePath = item.SourcePath,
+                IsLocked = item.IsLocked,
                 TimeTagDueAt = item.TimeTagDueAt,
                 TimeTagReminderEnabled = item.TimeTagReminderEnabled,
                 TimeTagRecurrence = item.TimeTagRecurrence,
@@ -522,6 +524,7 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
                 ZIndex = itemDocument.ZIndex,
                 Content = itemDocument.Content,
                 SourcePath = sourcePathResolver(document.Id, itemDocument.SourcePath),
+                IsLocked = itemDocument.IsLocked,
                 TimeTagDueAt = itemDocument.TimeTagDueAt,
                 TimeTagReminderEnabled = itemDocument.TimeTagReminderEnabled,
                 TimeTagRecurrence = itemDocument.TimeTagRecurrence,
@@ -770,8 +773,9 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
                 Width = item.Width,
                 Height = item.Height,
                 ZIndex = item.ZIndex,
-                Content = item.Kind == BoardItemKind.Markdown ? item.Content : null,
+                Content = item.Kind is BoardItemKind.Markdown or BoardItemKind.WebView ? item.Content : null,
                 SourcePath = NormalizeSourcePathForArchive(task.Id, item.SourcePath),
+                IsLocked = item.IsLocked,
                 TimeTagDueAt = item.Kind == BoardItemKind.TimeTag ? item.TimeTagDueAt : null,
                 TimeTagReminderEnabled = item.Kind == BoardItemKind.TimeTag && item.TimeTagReminderEnabled,
                 TimeTagRecurrence = item.Kind == BoardItemKind.TimeTag ? item.TimeTagRecurrence : TimeTagRecurrence.None,
@@ -1152,6 +1156,8 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
 
         public string? SourcePath { get; set; }
 
+        public bool IsLocked { get; set; }
+
         public DateTimeOffset? TimeTagDueAt { get; set; }
 
         public bool TimeTagReminderEnabled { get; set; }
@@ -1279,6 +1285,7 @@ public sealed class BoardItemModel : INotifyPropertyChanged
     private bool _isEditing;
     private string? _content;
     private string? _sourcePath;
+    private bool _isLocked;
     private DateTimeOffset? _timeTagDueAt;
     private bool _timeTagReminderEnabled = true;
     private TimeTagRecurrence _timeTagRecurrence;
@@ -1339,6 +1346,12 @@ public sealed class BoardItemModel : INotifyPropertyChanged
     {
         get => _sourcePath;
         set => SetProperty(ref _sourcePath, value);
+    }
+
+    public bool IsLocked
+    {
+        get => _isLocked;
+        set => SetProperty(ref _isLocked, value);
     }
 
     public DateTimeOffset? TimeTagDueAt

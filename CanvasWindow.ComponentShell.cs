@@ -28,6 +28,7 @@ public sealed partial class CanvasWindow
         shell.PointerEntered += BoardItem_PointerEntered;
         shell.PointerExited += BoardItem_PointerExited;
         shell.DoubleTapped += BoardItem_DoubleTapped;
+        shell.RightTapped += BoardItem_RightTapped;
 
         var content = item.Kind switch
         {
@@ -35,6 +36,7 @@ public sealed partial class CanvasWindow
             BoardItemKind.Video => BuildVideoCard(item),
             BoardItemKind.File => BuildFileCard(item),
             BoardItemKind.TimeTag => BuildTimeTagCard(item),
+            BoardItemKind.WebView => BuildWebViewCard(item),
             _ => BuildMarkdownCard(item)
         };
 
