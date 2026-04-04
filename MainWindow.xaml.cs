@@ -277,6 +277,8 @@ public sealed partial class MainWindow : Window
 
     private void InitializeTrayIcon()
     {
+        var iconHandle = LoadCustomIcon();
+
         _notifyIconData = new NotifyIconData
         {
             cbSize = (uint)Marshal.SizeOf<NotifyIconData>(),
@@ -284,11 +286,36 @@ public sealed partial class MainWindow : Window
             uID = 1,
             uFlags = NifMessage | NifIcon | NifTip,
             uCallbackMessage = WmTrayIcon,
-            hIcon = LoadIcon(IntPtr.Zero, new IntPtr(IddiApplication)),
+            hIcon = iconHandle,
             szTip = "LumiCanvas"
         };
 
         _trayIconRegistered = ShellNotifyIcon(NimAdd, ref _notifyIconData);
+    }
+
+    private static IntPtr LoadCustomIcon()
+    {
+        try
+        {
+            var executablePath = Environment.ProcessPath;
+            if (!string.IsNullOrWhiteSpace(executablePath))
+            {
+                var executableDir = Path.GetDirectoryName(executablePath);
+                if (!string.IsNullOrWhiteSpace(executableDir))
+                {
+                    var iconPath = Path.Combine(executableDir, "Assets", "app.ico");
+                    if (File.Exists(iconPath))
+                    {
+                        return LoadImage(IntPtr.Zero, iconPath, 1, 16, 16, 0x00000010);
+                    }
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        return LoadIcon(IntPtr.Zero, new IntPtr(IddiApplication));
     }
 
     private void AppWindow_Closing(AppWindow sender, AppWindowClosingEventArgs args)
@@ -1073,6 +1100,9 @@ public sealed partial class MainWindow : Window
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr LoadIcon(IntPtr hInstance, IntPtr lpIconName);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr LoadImage(IntPtr hInst, string lpszName, uint uType, int cxDesired, int cyDesired, uint fuLoad);
 
     [DllImport("shell32.dll", EntryPoint = "Shell_NotifyIconW", CharSet = CharSet.Unicode)]
     [return: MarshalAs(UnmanagedType.Bool)]

@@ -107,7 +107,8 @@ public sealed partial class CanvasWindow
         async void InitializeWebView(object? _, RoutedEventArgs __)
         {
             webView.Loaded -= InitializeWebView;
-            await webView.EnsureCoreWebView2Async();
+            var environment = await GetWebView2EnvironmentAsync();
+            await webView.EnsureCoreWebView2Async(environment);
 
             webView.CoreWebView2.WebMessageReceived += (_, args) =>
             {

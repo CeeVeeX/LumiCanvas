@@ -44,6 +44,7 @@ public sealed partial class CanvasWindow
 
             editor.WebMessageReceived += MarkdownWebView_WebMessageReceived;
             editor.Loaded += MarkdownEditor_Loaded;
+            editor.LostFocus += MarkdownEditor_LostFocus;
 
             layout.Children.Add(editor);
             return layout;

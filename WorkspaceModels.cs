@@ -799,10 +799,16 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
 
     private void WriteTaskArchive(TaskSaveSnapshot snapshot, CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
 
         EnsureTaskAssetsCacheAvailable(snapshot.TaskId);
-        cancellationToken.ThrowIfCancellationRequested();
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
 
         if (File.Exists(snapshot.TempPath))
         {
@@ -825,14 +831,20 @@ public sealed class WorkspaceSession : INotifyPropertyChanged
                 {
                     foreach (var file in Directory.EnumerateFiles(assetsRoot, "*", SearchOption.AllDirectories))
                     {
-                        cancellationToken.ThrowIfCancellationRequested();
+                        if (cancellationToken.IsCancellationRequested)
+                        {
+                            return;
+                        }
                         var relativeEntry = Path.GetRelativePath(snapshot.TaskRoot, file).Replace(Path.DirectorySeparatorChar, '/');
                         archive.CreateEntryFromFile(file, relativeEntry, CompressionLevel.Optimal);
                     }
                 }
             }
 
-            cancellationToken.ThrowIfCancellationRequested();
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
             File.Move(snapshot.TempPath, snapshot.FinalPath, true);
         }
         catch

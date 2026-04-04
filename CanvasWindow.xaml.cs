@@ -584,7 +584,7 @@ public sealed partial class CanvasWindow : Window
             return;
         }
 
-        _session.CurrentTask.Items.Add(new BoardItemModel
+        var item = new BoardItemModel
         {
             Kind = BoardItemKind.TimeTag,
             X = position.X,
@@ -597,9 +597,10 @@ public sealed partial class CanvasWindow : Window
             TimeTagReminderEnabled = true,
             TimeTagRecurrence = TimeTagRecurrence.None,
             TimeTagLastReminderAt = null
-        });
+        };
 
-        RenderCurrentBoard();
+        _session.CurrentTask.Items.Add(item);
+        AddBoardItemView(item);
     }
 
     private void AddWebViewAt(Point position)
@@ -1117,6 +1118,12 @@ public sealed partial class CanvasWindow : Window
 
         if (item.Kind == BoardItemKind.Markdown)
         {
+            if (item.IsEditing)
+            {
+                e.Handled = true;
+                return;
+            }
+
             var previouslyEditing = _session.CurrentTask?.Items
                 .FirstOrDefault(candidate => candidate.Kind == BoardItemKind.Markdown && candidate.IsEditing && candidate.Id != item.Id);
 
@@ -1240,6 +1247,13 @@ public sealed partial class CanvasWindow : Window
         }
 
         ClearLingeringInputFocus();
+
+        var editingItem = _session.CurrentTask?.Items
+            .FirstOrDefault(candidate => candidate.Kind == BoardItemKind.Markdown && candidate.IsEditing);
+        if (editingItem is not null)
+        {
+            _ = ExitMarkdownEditingModeAsync(editingItem);
+        }
 
         if (IsControlPressed())
         {
@@ -1799,6 +1813,43 @@ public sealed partial class CanvasWindow : Window
         }
         catch
         {
+        }
+    }
+
+    private async void MarkdownEditor_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (sender is not WebView2 editor || editor.Tag is not BoardItemModel item)
+        {
+            return;
+        }
+
+        if (!item.IsEditing)
+        {
+            return;
+        }
+
+        await ExitMarkdownEditingModeAsync(item);
+    }
+
+    private async Task ExitMarkdownEditingModeAsync(BoardItemModel item)
+    {
+        if (!item.IsEditing)
+        {
+            return;
+        }
+
+        _session.BeginDeferredSave();
+        try
+        {
+            await TryCommitMarkdownEditorContentAsync(item);
+            _markdownHighlightTimer.Stop();
+            _pendingHighlightEditor = null;
+            item.IsEditing = false;
+            RefreshBoardItemView(item);
+        }
+        finally
+        {
+            _session.EndDeferredSave();
         }
     }
 

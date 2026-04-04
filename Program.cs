@@ -12,6 +12,7 @@ public static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        EnsureWorkingDirectory();
         XamlCheckProcessRequirements();
         ComWrappersSupport.InitializeComWrappers();
 
@@ -30,6 +31,25 @@ public static class Program
             SynchronizationContext.SetSynchronizationContext(new DispatcherQueueSynchronizationContext(dispatcherQueue));
             _ = new App();
         });
+    }
+
+    private static void EnsureWorkingDirectory()
+    {
+        try
+        {
+            var executablePath = Environment.ProcessPath;
+            if (!string.IsNullOrWhiteSpace(executablePath))
+            {
+                var executableDirectory = System.IO.Path.GetDirectoryName(executablePath);
+                if (!string.IsNullOrWhiteSpace(executableDirectory) && System.IO.Directory.Exists(executableDirectory))
+                {
+                    System.IO.Directory.SetCurrentDirectory(executableDirectory);
+                }
+            }
+        }
+        catch
+        {
+        }
     }
 
     [System.Runtime.InteropServices.DllImport("Microsoft.ui.xaml.dll")]
