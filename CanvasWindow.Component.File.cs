@@ -76,6 +76,8 @@ public sealed partial class CanvasWindow
         {
             ".png" or ".jpg" or ".jpeg" or ".gif" or ".bmp" or ".webp" => BoardItemKind.Image,
             ".mp4" or ".mov" or ".wmv" or ".avi" or ".mkv" or ".webm" => BoardItemKind.Video,
+            ".pdf" => BoardItemKind.Pdf,
+            ".md" or ".markdown" => BoardItemKind.Markdown,
             _ => BoardItemKind.File
         };
     }

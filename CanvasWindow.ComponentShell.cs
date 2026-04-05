@@ -37,6 +37,7 @@ public sealed partial class CanvasWindow
             BoardItemKind.File => BuildFileCard(item),
             BoardItemKind.TimeTag => BuildTimeTagCard(item),
             BoardItemKind.WebView => BuildWebViewCard(item),
+            BoardItemKind.Pdf => BuildPdfCard(item),
             _ => BuildMarkdownCard(item)
         };
 
@@ -199,6 +200,7 @@ public sealed partial class CanvasWindow
         Canvas.SetZIndex(view, item.ZIndex);
         BoardCanvas.Children.Add(view);
         _highestZIndex = Math.Max(_highestZIndex, item.ZIndex);
+        SetupFileWatcher(item);
         UpdateMiniMap();
         UpdateCanvasMetrics();
         return view;
@@ -211,6 +213,7 @@ public sealed partial class CanvasWindow
             return;
         }
 
+        CleanupFileWatcher(itemId);
         BoardCanvas.Children.Remove(view);
         _itemViews.Remove(itemId);
         UpdateMiniMap();

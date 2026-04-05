@@ -27,7 +27,8 @@ public enum BoardItemKind
     Video,
     File,
     TimeTag,
-    WebView
+    WebView,
+    Pdf
 }
 
 [Flags]

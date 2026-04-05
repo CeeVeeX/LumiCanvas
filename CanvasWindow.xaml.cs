@@ -46,6 +46,8 @@ public sealed partial class CanvasWindow : Window
     private const double MinimumTimeTagHeight = 180;
     private const double MinimumWebViewWidth = 360;
     private const double MinimumWebViewHeight = 220;
+    private const double MinimumPdfWidth = 420;
+    private const double MinimumPdfHeight = 560;
     private const double MiniMapPaddingWorld = 120;
     private const double MiniMapCanvasPadding = 4;
     private const int GwlStyle = -16;
@@ -117,6 +119,9 @@ public sealed partial class CanvasWindow : Window
     private int _gridBitmapHeight;
     private List<BoardItemModel> _activeDraggedItems = [];
     private List<ClipboardBoardItemPayload> _copiedBoardItems = [];
+    private readonly Dictionary<Guid, FileSystemWatcher> _fileWatchers = [];
+    private readonly Dictionary<Guid, DispatcherQueueTimer> _fileRefreshTimers = [];
+    private readonly HashSet<Guid> _pendingFileRefreshItems = [];
 
     public CanvasWindow(WorkspaceSession session)
     {
@@ -212,6 +217,7 @@ public sealed partial class CanvasWindow : Window
     public void Shutdown()
     {
         UninitializeClipboardIntegration();
+        CleanupAllFileWatchers();
         _isInternalClose = true;
         Close();
     }
@@ -483,6 +489,11 @@ public sealed partial class CanvasWindow : Window
         AddWebViewAt(_contextMenuWorldPoint == default ? GetViewportCenterWorldPoint() : _contextMenuWorldPoint);
     }
 
+    private async void AddPdfMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        await AddPdfAtAsync(_contextMenuWorldPoint == default ? GetViewportCenterWorldPoint() : _contextMenuWorldPoint);
+    }
+
     private async Task AddFileAtAsync(Point position)
     {
         if (_session.CurrentTask is null)
@@ -548,7 +559,17 @@ public sealed partial class CanvasWindow : Window
             return (360, 240);
         }
 
-        return kind == BoardItemKind.Video ? (420, 300) : (320, 140);
+        if (kind == BoardItemKind.Video)
+        {
+            return (420, 300);
+        }
+
+        if (kind == BoardItemKind.Pdf)
+        {
+            return (480, 640);
+        }
+
+        return (320, 140);
     }
 
     private static async Task<(double Width, double Height)?> TryGetImageSizeAsync(string? sourcePath)
@@ -619,6 +640,38 @@ public sealed partial class CanvasWindow : Window
             Height = 560,
             ZIndex = _highestZIndex + 1,
             Content = "https://www.bing.com"
+        };
+
+        _session.CurrentTask.Items.Add(item);
+        AddBoardItemView(item);
+    }
+
+    private async Task AddPdfAtAsync(Point position)
+    {
+        if (_session.CurrentTask is null)
+        {
+            return;
+        }
+
+        var picker = new FileOpenPicker();
+        InitializeWithWindow.Initialize(picker, _hwnd);
+        picker.FileTypeFilter.Add(".pdf");
+
+        var file = await picker.PickSingleFileAsync();
+        if (file is null || string.IsNullOrWhiteSpace(file.Path))
+        {
+            return;
+        }
+
+        var item = new BoardItemModel
+        {
+            Kind = BoardItemKind.Pdf,
+            X = position.X,
+            Y = position.Y,
+            Width = 480,
+            Height = 640,
+            ZIndex = _highestZIndex + 1,
+            SourcePath = file.Path
         };
 
         _session.CurrentTask.Items.Add(item);
@@ -793,6 +846,10 @@ public sealed partial class CanvasWindow : Window
         var addWebViewItem = new MenuFlyoutItem { Text = "ÃÌº”Õ¯“≥" };
         addWebViewItem.Click += AddWebViewMenuItem_Click;
         flyout.Items.Add(addWebViewItem);
+
+        var addPdfItem = new MenuFlyoutItem { Text = "ÃÌº”PDF" };
+        addPdfItem.Click += AddPdfMenuItem_Click;
+        flyout.Items.Add(addPdfItem);
 
         flyout.ShowAt(CanvasViewport, e.GetPosition(CanvasViewport));
         e.Handled = true;
@@ -1088,6 +1145,7 @@ public sealed partial class CanvasWindow : Window
 
     private void RenderCurrentBoard()
     {
+        CleanupAllFileWatchers();
         BoardCanvas.Children.Clear();
         _itemViews.Clear();
         UpdateCommandState();
@@ -1808,7 +1866,23 @@ public sealed partial class CanvasWindow : Window
             var text = JsonSerializer.Deserialize<string>(raw);
             if (text is not null)
             {
-                item.Content = NormalizeEditorText(text);
+                var normalized = NormalizeEditorText(text);
+
+                if (!string.IsNullOrWhiteSpace(item.SourcePath))
+                {
+                    try
+                    {
+                        File.WriteAllText(item.SourcePath, normalized);
+                    }
+                    catch
+                    {
+                        item.Content = normalized;
+                    }
+                }
+                else
+                {
+                    item.Content = normalized;
+                }
             }
         }
         catch
@@ -1897,6 +1971,7 @@ public sealed partial class CanvasWindow : Window
             BoardItemKind.Image or BoardItemKind.Video => (MinimumMediaWidth, MinimumMediaHeight),
             BoardItemKind.TimeTag => (MinimumTimeTagWidth, MinimumTimeTagHeight),
             BoardItemKind.WebView => (MinimumWebViewWidth, MinimumWebViewHeight),
+            BoardItemKind.Pdf => (MinimumPdfWidth, MinimumPdfHeight),
             _ => (MinimumFileWidth, MinimumFileHeight)
         };
     }
@@ -1951,6 +2026,143 @@ public sealed partial class CanvasWindow : Window
         {
             mediaPlayer.AreTransportControlsEnabled = false;
         }
+    }
+
+    private void SetupFileWatcher(BoardItemModel item)
+    {
+        if (string.IsNullOrWhiteSpace(item.SourcePath) || !File.Exists(item.SourcePath))
+        {
+            return;
+        }
+
+        var shouldWatch = item.Kind switch
+        {
+            BoardItemKind.Markdown => true,
+            BoardItemKind.Image => true,
+            BoardItemKind.Video => true,
+            BoardItemKind.Pdf => true,
+            _ => false
+        };
+
+        if (!shouldWatch)
+        {
+            return;
+        }
+
+        CleanupFileWatcher(item.Id);
+
+        try
+        {
+            var directory = Path.GetDirectoryName(item.SourcePath);
+            var fileName = Path.GetFileName(item.SourcePath);
+
+            if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(fileName))
+            {
+                return;
+            }
+
+            var watcher = new FileSystemWatcher(directory)
+            {
+                Filter = fileName,
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size,
+                EnableRaisingEvents = true
+            };
+
+            watcher.Changed += (_, _) => ScheduleFileRefresh(item.Id);
+            watcher.Deleted += (_, _) => ScheduleFileRefresh(item.Id);
+            watcher.Renamed += (_, _) => ScheduleFileRefresh(item.Id);
+
+            _fileWatchers[item.Id] = watcher;
+        }
+        catch
+        {
+        }
+    }
+
+    private void ScheduleFileRefresh(Guid itemId)
+    {
+        if (_pendingFileRefreshItems.Contains(itemId))
+        {
+            return;
+        }
+
+        _pendingFileRefreshItems.Add(itemId);
+
+        if (!_fileRefreshTimers.TryGetValue(itemId, out var timer))
+        {
+            timer = _dispatcherQueue.CreateTimer();
+            timer.Interval = TimeSpan.FromMilliseconds(300);
+            timer.IsRepeating = false;
+            timer.Tick += (_, _) => RefreshFileBasedItem(itemId);
+            _fileRefreshTimers[itemId] = timer;
+        }
+
+        timer.Stop();
+        timer.Start();
+    }
+
+    private void RefreshFileBasedItem(Guid itemId)
+    {
+        _pendingFileRefreshItems.Remove(itemId);
+
+        if (_session.CurrentTask is null)
+        {
+            return;
+        }
+
+        var item = _session.CurrentTask.Items.FirstOrDefault(i => i.Id == itemId);
+        if (item is null)
+        {
+            return;
+        }
+
+        if (item.Kind == BoardItemKind.Markdown && item.IsEditing)
+        {
+            return;
+        }
+
+        if (!_itemViews.ContainsKey(itemId))
+        {
+            return;
+        }
+
+        RefreshBoardItemView(item);
+    }
+
+    private void CleanupFileWatcher(Guid itemId)
+    {
+        if (_fileWatchers.TryGetValue(itemId, out var watcher))
+        {
+            watcher.EnableRaisingEvents = false;
+            watcher.Dispose();
+            _fileWatchers.Remove(itemId);
+        }
+
+        if (_fileRefreshTimers.TryGetValue(itemId, out var timer))
+        {
+            timer.Stop();
+            _fileRefreshTimers.Remove(itemId);
+        }
+
+        _pendingFileRefreshItems.Remove(itemId);
+    }
+
+    private void CleanupAllFileWatchers()
+    {
+        foreach (var watcher in _fileWatchers.Values)
+        {
+            watcher.EnableRaisingEvents = false;
+            watcher.Dispose();
+        }
+        _fileWatchers.Clear();
+
+        foreach (var timer in _fileRefreshTimers.Values)
+        {
+            timer.Stop();
+        }
+        _fileRefreshTimers.Clear();
+
+        _pendingFileRefreshItems.Clear();
     }
 
     [DllImport("user32.dll")]

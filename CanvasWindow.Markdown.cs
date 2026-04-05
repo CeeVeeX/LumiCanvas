@@ -50,14 +50,42 @@ public sealed partial class CanvasWindow
             return layout;
         }
 
+        var content = GetMarkdownContent(item);
+        if (content is null)
+        {
+            return CreateMissingMediaHint("Markdown文件不存在或已被移动");
+        }
+
         layout.Children.Add(new ScrollViewer
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             Padding = new Thickness(12),
-            Content = BuildMarkdownPreview(item.Content ?? string.Empty)
+            Content = BuildMarkdownPreview(content)
         });
         return layout;
+    }
+
+    private static string? GetMarkdownContent(BoardItemModel item)
+    {
+        if (!string.IsNullOrWhiteSpace(item.SourcePath))
+        {
+            if (!File.Exists(item.SourcePath))
+            {
+                return null;
+            }
+
+            try
+            {
+                return File.ReadAllText(item.SourcePath);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        return item.Content ?? string.Empty;
     }
 
     private FrameworkElement BuildMarkdownPreview(string markdown)
@@ -1222,7 +1250,8 @@ public sealed partial class CanvasWindow
         async void OnNavigationCompleted(WebView2 webView, CoreWebView2NavigationCompletedEventArgs _)
         {
             webView.NavigationCompleted -= OnNavigationCompleted;
-            var markdownJson = JsonSerializer.Serialize(item.Content ?? string.Empty);
+            var content = GetMarkdownContent(item) ?? string.Empty;
+            var markdownJson = JsonSerializer.Serialize(content);
             await webView.ExecuteScriptAsync($"window.setMarkdownValue({markdownJson});");
 
             if (_pendingFocusItemId == item.Id)
