@@ -94,6 +94,7 @@ public sealed partial class CanvasWindow : Window
     private bool _isSelectingArea;
     private bool _isApplyingMarkdownHighlight;
     private bool _isInternalClose;
+    private bool _isSpaceDragMode;
     private double _scale = 1;
     private double _offsetX;
     private double _offsetY;
@@ -137,6 +138,7 @@ public sealed partial class CanvasWindow : Window
         _hwnd = WindowNative.GetWindowHandle(this);
         RootGrid.ActualThemeChanged += RootGrid_ActualThemeChanged;
         RootGrid.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler(RootGrid_KeyDown), true);
+        RootGrid.AddHandler(UIElement.KeyUpEvent, new KeyEventHandler(RootGrid_KeyUp), true);
         InitializeClipboardIntegration();
         CanvasViewport.SizeChanged += CanvasViewport_SizeChanged;
         ApplyThemeStyles();
@@ -333,6 +335,17 @@ public sealed partial class CanvasWindow : Window
 
     private async void RootGrid_KeyDown(object sender, KeyRoutedEventArgs e)
     {
+        if (e.Key == Windows.System.VirtualKey.Space && !IsTextInputFocused())
+        {
+            if (!_isSpaceDragMode)
+            {
+                _isSpaceDragMode = true;
+            }
+
+            e.Handled = true;
+            return;
+        }
+
         if (e.Key == Windows.System.VirtualKey.Escape)
         {
             await ReturnToSidebarAsync();
@@ -373,6 +386,21 @@ public sealed partial class CanvasWindow : Window
             DeleteSelectedItems();
             e.Handled = true;
         }
+    }
+
+    private void RootGrid_KeyUp(object sender, KeyRoutedEventArgs e)
+    {
+        if (e.Key != Windows.System.VirtualKey.Space)
+        {
+            return;
+        }
+
+        if (_isSpaceDragMode)
+        {
+            _isSpaceDragMode = false;
+        }
+
+        e.Handled = true;
     }
 
     private void DeleteKeyboardAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
@@ -751,7 +779,7 @@ public sealed partial class CanvasWindow : Window
             return;
         }
 
-        if (!point.Properties.IsMiddleButtonPressed)
+        if (!IsPanGesture(point))
         {
             return;
         }
@@ -1367,7 +1395,7 @@ public sealed partial class CanvasWindow : Window
         ClearLingeringInputFocus();
 
         var pointerPoint = e.GetCurrentPoint(CanvasViewport);
-        if (pointerPoint.Properties.IsMiddleButtonPressed)
+        if (IsPanGesture(pointerPoint))
         {
             _isPanning = true;
             _isDraggingItem = false;
@@ -1843,6 +1871,11 @@ public sealed partial class CanvasWindow : Window
         return InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Control).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
     }
 
+    private bool IsPanGesture(PointerPoint point)
+    {
+        return point.Properties.IsMiddleButtonPressed || (_isSpaceDragMode && point.Properties.IsLeftButtonPressed);
+    }
+
     private bool IsTextInputFocused()
     {
         var root = Content?.XamlRoot;
@@ -2248,4 +2281,5 @@ public sealed partial class CanvasWindow : Window
 
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int dwAttribute, ref uint pvAttribute, int cbAttribute);
+
 }

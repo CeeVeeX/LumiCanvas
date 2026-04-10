@@ -69,7 +69,7 @@ public sealed partial class CanvasWindow
         webView.PointerPressed += (_, args) =>
         {
             var point = args.GetCurrentPoint(CanvasViewport);
-            if (!point.Properties.IsMiddleButtonPressed)
+            if (!IsPanGesture(point))
             {
                 return;
             }
