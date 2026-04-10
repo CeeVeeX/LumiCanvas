@@ -735,18 +735,23 @@ public sealed partial class CanvasWindow : Window
         }
 
         var point = e.GetCurrentPoint(CanvasViewport);
-        if (!point.Properties.IsLeftButtonPressed)
-        {
-            return;
-        }
-
         if (IsControlPressed())
         {
+            if (!point.Properties.IsLeftButtonPressed)
+            {
+                return;
+            }
+
             _isSelectingArea = true;
             _selectionStartPoint = point.Position;
             UpdateSelectionMarquee(point.Position);
             CanvasViewport.CapturePointer(e.Pointer);
             e.Handled = true;
+            return;
+        }
+
+        if (!point.Properties.IsMiddleButtonPressed)
+        {
             return;
         }
 
@@ -1306,6 +1311,21 @@ public sealed partial class CanvasWindow : Window
 
         ClearLingeringInputFocus();
 
+        var pointerPoint = e.GetCurrentPoint(CanvasViewport);
+        if (pointerPoint.Properties.IsMiddleButtonPressed)
+        {
+            _isPanning = true;
+            _isDraggingItem = false;
+            _draggedItem = null;
+            _activeDraggedItems.Clear();
+            _pressedItem = item;
+            _pressedItemElement = element;
+            _lastPointerPosition = pointerPoint.Position;
+            element.CapturePointer(e.Pointer);
+            e.Handled = true;
+            return;
+        }
+
         var editingItem = _session.CurrentTask?.Items
             .FirstOrDefault(candidate => candidate.Kind == BoardItemKind.Markdown && candidate.IsEditing);
         if (editingItem is not null)
@@ -1342,7 +1362,6 @@ public sealed partial class CanvasWindow : Window
             SetSelectedItems([item]);
         }
 
-        var pointerPoint = e.GetCurrentPoint(CanvasViewport);
         if (!pointerPoint.Properties.IsLeftButtonPressed || IsInteractiveElement(e.OriginalSource as DependencyObject))
         {
             return;
@@ -1350,14 +1369,6 @@ public sealed partial class CanvasWindow : Window
 
         if (item.IsLocked)
         {
-            _isPanning = true;
-            _isDraggingItem = false;
-            _draggedItem = null;
-            _activeDraggedItems.Clear();
-            _pressedItem = item;
-            _pressedItemElement = element;
-            _lastPointerPosition = pointerPoint.Position;
-            element.CapturePointer(e.Pointer);
             e.Handled = true;
             return;
         }
@@ -1412,7 +1423,7 @@ public sealed partial class CanvasWindow : Window
 
         var currentPosition = e.GetCurrentPoint(CanvasViewport).Position;
 
-        if (_isPanning && _pressedItem is not null && _pressedItem.IsLocked && ReferenceEquals(_pressedItemElement, element))
+        if (_isPanning && ReferenceEquals(_pressedItemElement, element))
         {
             _offsetX += currentPosition.X - _lastPointerPosition.X;
             _offsetY += currentPosition.Y - _lastPointerPosition.Y;
@@ -2038,9 +2049,6 @@ public sealed partial class CanvasWindow : Window
         var shouldWatch = item.Kind switch
         {
             BoardItemKind.Markdown => true,
-            BoardItemKind.Image => true,
-            BoardItemKind.Video => true,
-            BoardItemKind.Pdf => true,
             _ => false
         };
 

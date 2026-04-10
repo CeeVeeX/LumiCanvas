@@ -88,6 +88,56 @@ public sealed partial class CanvasWindow
             VerticalAlignment = VerticalAlignment.Stretch,
             DefaultBackgroundColor = Windows.UI.Color.FromArgb(255, 255, 255, 255)
         };
+        webView.PointerPressed += (_, args) =>
+        {
+            var point = args.GetCurrentPoint(CanvasViewport);
+            if (!point.Properties.IsMiddleButtonPressed)
+            {
+                return;
+            }
+
+            if (!_selectedItemIds.Contains(item.Id))
+            {
+                SetSelectedItems([item]);
+            }
+
+            _isPanning = true;
+            _isDraggingItem = false;
+            _draggedItem = null;
+            _activeDraggedItems.Clear();
+            _pressedItem = item;
+            _pressedItemElement = webView;
+            _lastPointerPosition = point.Position;
+            webView.CapturePointer(args.Pointer);
+            args.Handled = true;
+        };
+        webView.PointerMoved += (_, args) =>
+        {
+            if (!_isPanning || !ReferenceEquals(_pressedItemElement, webView))
+            {
+                return;
+            }
+
+            var currentPosition = args.GetCurrentPoint(CanvasViewport).Position;
+            _offsetX += currentPosition.X - _lastPointerPosition.X;
+            _offsetY += currentPosition.Y - _lastPointerPosition.Y;
+            _lastPointerPosition = currentPosition;
+            UpdateCanvasTransform();
+            args.Handled = true;
+        };
+        webView.PointerReleased += (_, args) =>
+        {
+            if (!ReferenceEquals(_pressedItemElement, webView))
+            {
+                return;
+            }
+
+            webView.ReleasePointerCapture(args.Pointer);
+            _isPanning = false;
+            _pressedItem = null;
+            _pressedItemElement = null;
+            args.Handled = true;
+        };
         webView.GotFocus += (_, _) =>
         {
             if (!_selectedItemIds.Contains(item.Id))
@@ -119,10 +169,12 @@ public sealed partial class CanvasWindow
 
                 _dispatcherQueue.TryEnqueue(() =>
                 {
-                    if (_selectedItemIds.Contains(item.Id))
+                    if (!_selectedItemIds.Contains(item.Id))
                     {
-                        DeleteSelectedItems();
+                        SetSelectedItems([item]);
                     }
+
+                    DeleteSelectedItems();
                 });
             };
 
