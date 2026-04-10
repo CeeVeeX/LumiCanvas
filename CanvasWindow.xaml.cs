@@ -50,6 +50,7 @@ public sealed partial class CanvasWindow : Window
     private const double MinimumPdfHeight = 560;
     private const double MiniMapPaddingWorld = 120;
     private const double MiniMapCanvasPadding = 4;
+    private const double ViewportCullPaddingRatio = 0.75;
     private const int GwlStyle = -16;
     private const int GwlExStyle = -20;
     private const int DwmwaWindowCornerPreference = 33;
@@ -804,12 +805,23 @@ public sealed partial class CanvasWindow : Window
     private void CanvasViewport_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
     {
         var pointerPoint = e.GetCurrentPoint(CanvasViewport);
-        var zoomFactor = pointerPoint.Properties.MouseWheelDelta > 0 ? 1.12 : 1 / 1.12;
-        var worldBeforeZoom = ScreenToWorld(pointerPoint.Position);
-        _scale = Math.Clamp(_scale * zoomFactor, 0.25, 4.5);
+        var baseScale = _scale;
+        var scaleT = Math.Clamp((baseScale - 0.25) / (4.5 - 0.25), 0, 1);
+        var perStepFactor = 1.12 - (0.07 * scaleT);
+        var wheelSteps = Math.Clamp(Math.Abs(pointerPoint.Properties.MouseWheelDelta) / 120.0, 1.0, 4.0);
+        var stepFactor = Math.Pow(perStepFactor, wheelSteps);
+        var zoomFactor = pointerPoint.Properties.MouseWheelDelta > 0 ? stepFactor : 1 / stepFactor;
+        var baseOffsetX = _offsetX;
+        var baseOffsetY = _offsetY;
+        var worldBeforeZoom = new Point(
+            (pointerPoint.Position.X - baseOffsetX) / baseScale,
+            (pointerPoint.Position.Y - baseOffsetY) / baseScale);
+
+        _scale = Math.Clamp(baseScale * zoomFactor, 0.25, 4.5);
         _offsetX = pointerPoint.Position.X - (worldBeforeZoom.X * _scale);
         _offsetY = pointerPoint.Position.Y - (worldBeforeZoom.Y * _scale);
         UpdateCanvasTransform();
+
         e.Handled = true;
     }
 
@@ -923,6 +935,7 @@ public sealed partial class CanvasWindow : Window
         }
 
         UpdateGridDots();
+        UpdateViewportItemVisibility();
         UpdateCanvasMetrics();
         UpdateMiniMap();
     }
@@ -930,7 +943,48 @@ public sealed partial class CanvasWindow : Window
     private void CanvasViewport_SizeChanged(object sender, SizeChangedEventArgs e)
     {
         UpdateGridDots();
+        UpdateViewportItemVisibility();
         UpdateMiniMap();
+    }
+
+    private void UpdateViewportItemVisibility()
+    {
+        if (_session.CurrentTask is null || _itemViews.Count == 0 || _scale <= 0)
+        {
+            return;
+        }
+
+        var visibleWidth = Math.Max(1, CanvasViewport.ActualWidth / _scale);
+        var visibleHeight = Math.Max(1, CanvasViewport.ActualHeight / _scale);
+        var visibleLeft = -_offsetX / _scale;
+        var visibleTop = -_offsetY / _scale;
+        var visibleRight = visibleLeft + visibleWidth;
+        var visibleBottom = visibleTop + visibleHeight;
+
+        var paddingX = visibleWidth * ViewportCullPaddingRatio;
+        var paddingY = visibleHeight * ViewportCullPaddingRatio;
+        var cullLeft = visibleLeft - paddingX;
+        var cullTop = visibleTop - paddingY;
+        var cullRight = visibleRight + paddingX;
+        var cullBottom = visibleBottom + paddingY;
+
+        foreach (var view in _itemViews.Values)
+        {
+            if (view.Tag is not BoardItemModel item)
+            {
+                continue;
+            }
+
+            var intersects = item.X + item.Width >= cullLeft &&
+                             item.X <= cullRight &&
+                             item.Y + item.Height >= cullTop &&
+                             item.Y <= cullBottom;
+            var target = intersects ? Visibility.Visible : Visibility.Collapsed;
+            if (view.Visibility != target)
+            {
+                view.Visibility = target;
+            }
+        }
     }
 
     private void UpdateGridDots()
@@ -1166,6 +1220,7 @@ public sealed partial class CanvasWindow : Window
         }
 
         _highestZIndex = _session.CurrentTask.Items.Count == 0 ? 0 : _session.CurrentTask.Items.Max(item => item.ZIndex);
+        UpdateViewportItemVisibility();
         UpdateMiniMap();
     }
 
